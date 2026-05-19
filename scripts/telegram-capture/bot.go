@@ -110,9 +110,12 @@ func (c *httpTelegramClient) SendMessage(ctx context.Context, chatID int64, text
 }
 
 type Bot struct {
-	client     TelegramClient
-	offsetFile string
-	rootDir    string
+	client          TelegramClient
+	offsetFile      string
+	rootDir         string
+	lastProfile     string
+	lastJournalFile string
+	lastEntryTime   time.Time
 }
 
 func NewBot(client TelegramClient, offsetFile string) *Bot {
@@ -228,23 +231,54 @@ func (b *Bot) processMessage(ctx context.Context, update Update) error {
 
 func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string, error) {
 	msg := strings.TrimSpace(update.Message.Text)
-	profile := "personal"
-	cleanMsg := msg
+	now := time.Now()
 
-	if strings.HasPrefix(msg, "/w ") || strings.HasPrefix(msg, "/work ") {
-		profile = "work"
-		cleanMsg = strings.TrimPrefix(msg, "/w ")
-		cleanMsg = strings.TrimPrefix(cleanMsg, "/work ")
-	} else if strings.HasPrefix(msg, "/p ") || strings.HasPrefix(msg, "/personal ") {
-		profile = "personal"
-		cleanMsg = strings.TrimPrefix(msg, "/p ")
-		cleanMsg = strings.TrimPrefix(cleanMsg, "/personal ")
+	// Check for "also " prefix
+	isAlso := false
+	if strings.HasPrefix(strings.ToLower(msg), "also ") {
+		isAlso = true
+		msg = strings.TrimSpace(msg[len("also "):])
 	}
 
-	cleanMsg = strings.TrimSpace(cleanMsg)
-	if cleanMsg == "" {
-		slog.Debug("Ignoring empty message", "update_id", update.UpdateID)
-		return "", "", nil
+	var profile string
+	var cleanMsg string
+	var journalFile string
+	var journalDir string
+	var dateStr string
+
+	if isAlso && b.lastJournalFile != "" {
+		// Use previous state for nesting
+		profile = b.lastProfile
+		journalFile = b.lastJournalFile
+		cleanMsg = msg
+	} else {
+		// Normal top-level capture
+		profile = "personal"
+		cleanMsg = msg
+
+		if strings.HasPrefix(msg, "/w ") || strings.HasPrefix(msg, "/work ") {
+			profile = "work"
+			cleanMsg = strings.TrimPrefix(msg, "/w ")
+			cleanMsg = strings.TrimPrefix(cleanMsg, "/work ")
+		} else if strings.HasPrefix(msg, "/p ") || strings.HasPrefix(msg, "/personal ") {
+			profile = "personal"
+			cleanMsg = strings.TrimPrefix(msg, "/p ")
+			cleanMsg = strings.TrimPrefix(cleanMsg, "/personal ")
+		}
+
+		cleanMsg = strings.TrimSpace(cleanMsg)
+		if cleanMsg == "" {
+			slog.Debug("Ignoring empty message", "update_id", update.UpdateID)
+			return "", "", nil
+		}
+
+		dateStr = now.Format("2006_01_02")
+		journalDir = filepath.Join(b.rootDir, profile, "journals")
+		journalFile = filepath.Join(journalDir, dateStr+".md")
+
+		if err := os.MkdirAll(journalDir, 0755); err != nil {
+			return "", "", fmt.Errorf("failed to create directory %s: %w", journalDir, err)
+		}
 	}
 
 	isTodo := false
@@ -257,23 +291,24 @@ func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string,
 		cleanMsg = cleanMsg + " #inbox"
 	}
 
-	now := time.Now()
-	dateStr := now.Format("2006_01_02")
 	timeStr := now.Format("15:04")
-
-	journalDir := filepath.Join(b.rootDir, profile, "journals")
-	journalFile := filepath.Join(journalDir, dateStr+".md")
-
-	if err := os.MkdirAll(journalDir, 0755); err != nil {
-		return "", "", fmt.Errorf("failed to create directory %s: %w", journalDir, err)
-	}
-
 	var entry string
-	if isTodo {
-		entry = fmt.Sprintf("- TODO %s %s\n", timeStr, cleanMsg)
+
+	if isAlso && b.lastJournalFile != "" {
+		indent := "  "
+		if now.Sub(b.lastEntryTime) > time.Hour {
+			entry = fmt.Sprintf("%s- %s %s\n", indent, timeStr, cleanMsg)
+		} else {
+			entry = fmt.Sprintf("%s- %s\n", indent, cleanMsg)
+		}
 	} else {
-		entry = fmt.Sprintf("- %s %s\n", timeStr, cleanMsg)
+		if isTodo {
+			entry = fmt.Sprintf("- TODO %s %s\n", timeStr, cleanMsg)
+		} else {
+			entry = fmt.Sprintf("- %s %s\n", timeStr, cleanMsg)
+		}
 	}
+
 	f, err := os.OpenFile(journalFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to open file %s: %w", journalFile, err)
@@ -283,6 +318,13 @@ func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string,
 	if _, err := f.WriteString(entry); err != nil {
 		return "", "", fmt.Errorf("failed to write to file %s: %w", journalFile, err)
 	}
+
+	// Update state
+	if !isAlso {
+		b.lastProfile = profile
+		b.lastJournalFile = journalFile
+	}
+	b.lastEntryTime = now
 
 	return entry, profile, nil
 }

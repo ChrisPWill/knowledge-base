@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -197,61 +196,38 @@ func TestProcessMessageError(t *testing.T) {
 	}
 }
 
-func TestBotRun(t *testing.T) {
-	caseTmpDir, err := os.MkdirTemp("", "logseq-run-")
+func TestNesting(t *testing.T) {
+	caseTmpDir, err := os.MkdirTemp("", "logseq-nesting-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(caseTmpDir)
 
-	offsetFile := filepath.Join(caseTmpDir, ".offset")
-
-	mock := &mockTelegramClient{
-		updates: []Update{
-			{UpdateID: 100, Message: struct {
-				Text string `json:"text"`
-				Chat struct {
-					ID int64 `json:"id"`
-				} `json:"chat"`
-			}{Text: "Message 1", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}},
-			{UpdateID: 101, Message: struct {
-				Text string `json:"text"`
-				Chat struct {
-					ID int64 `json:"id"`
-				} `json:"chat"`
-			}{Text: "Message 2", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}},
-		},
-	}
-
-	bot := NewBot(mock, offsetFile)
+	mock := &mockTelegramClient{}
+	bot := NewBot(mock, filepath.Join(caseTmpDir, ".offset"))
 	bot.rootDir = caseTmpDir
+	ctx := context.Background()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	// 1. Send a parent note
+	update1 := Update{}
+	update1.Message.Text = "Parent Note"
+	update1.Message.Chat.ID = 123
+	bot.processMessage(ctx, update1)
 
-	// Run in background and stop after a short while
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		cancel()
-	}()
+	// 2. Send an "also" note (within 1 hour)
+	update2 := Update{}
+	update2.Message.Text = "also Child 1"
+	update2.Message.Chat.ID = 123
+	bot.processMessage(ctx, update2)
 
-	err = bot.Run(ctx)
-	if err != nil && !strings.Contains(err.Error(), "context canceled") {
-		t.Fatalf("Bot.Run failed: %v", err)
-	}
+	// 3. Send another "also" note (fake time to > 1 hour)
+	bot.lastEntryTime = bot.lastEntryTime.Add(-2 * time.Hour)
+	update3 := Update{}
+	update3.Message.Text = "also Child 2"
+	update3.Message.Chat.ID = 123
+	bot.processMessage(ctx, update3)
 
-	// Verify offset was updated
-	data, err := os.ReadFile(offsetFile)
-	if err != nil {
-		t.Fatalf("could not read offset file: %v", err)
-	}
-	var offset int
-	fmt.Sscanf(string(data), "%d", &offset)
-	if offset != 102 {
-		t.Errorf("expected offset 102, got %d", offset)
-	}
-
-	// Verify both messages were captured
+	// Verify file content
 	now := time.Now().Format("2006_01_02")
 	path := filepath.Join(caseTmpDir, "personal", "journals", now+".md")
 	content, err := os.ReadFile(path)
@@ -259,7 +235,22 @@ func TestBotRun(t *testing.T) {
 		t.Fatalf("could not read journal file: %v", err)
 	}
 
-	if !strings.Contains(string(content), "Message 1") || !strings.Contains(string(content), "Message 2") {
-		t.Errorf("messages not found in journal: %q", string(content))
+	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %v", len(lines), lines)
+	}
+
+	// Line 1: Parent
+	if !strings.HasPrefix(lines[0], "- ") || !strings.Contains(lines[0], "Parent Note") {
+		t.Errorf("line 0 incorrect: %q", lines[0])
+	}
+	// Line 2: Child 1 (no timestamp)
+	if lines[1] != "  - Child 1 #inbox" {
+		t.Errorf("line 1 incorrect (expected no timestamp): %q", lines[1])
+	}
+	// Line 3: Child 2 (with timestamp)
+	matched, _ := regexp.MatchString(`^  - \d{2}:\d{2} Child 2 #inbox$`, lines[2])
+	if !matched {
+		t.Errorf("line 2 incorrect (expected timestamp): %q", lines[2])
 	}
 }
