@@ -138,11 +138,49 @@ func TestProcessMessage(t *testing.T) {
 			}
 
 			// Check confirmation message
-			expectedConfirm := fmt.Sprintf("Captured to %s journal.", tc.profile)
-			if len(mock.sent) != 1 || mock.sent[0] != expectedConfirm {
-				t.Errorf("expected confirmation message %q, got %v", expectedConfirm, mock.sent)
+			if len(mock.sent) != 1 {
+				t.Errorf("expected 1 message, got %d", len(mock.sent))
+				return
+			}
+			if !strings.Contains(mock.sent[0], "✅ Captured to "+tc.profile) {
+				t.Errorf("expected success emoji and profile in %q", mock.sent[0])
+			}
+			if !strings.Contains(mock.sent[0], tc.expected) {
+				t.Errorf("expected entry text %q in confirmation %q", tc.expected, mock.sent[0])
 			}
 		})
+	}
+}
+
+func TestProcessMessageError(t *testing.T) {
+	caseTmpDir, err := os.MkdirTemp("", "logseq-err-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(caseTmpDir)
+
+	// Create a file where a directory should be to force MkdirAll to fail
+	err = os.WriteFile(filepath.Join(caseTmpDir, "personal"), []byte("not a directory"), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockTelegramClient{}
+	bot := NewBot(mock, filepath.Join(caseTmpDir, ".offset"))
+	bot.rootDir = caseTmpDir
+	ctx := context.Background()
+
+	update := Update{}
+	update.Message.Text = "This should fail"
+	update.Message.Chat.ID = 123
+
+	err = bot.processMessage(ctx, update)
+	if err == nil {
+		t.Fatal("expected error but got nil")
+	}
+
+	if len(mock.sent) != 1 || !strings.Contains(mock.sent[0], "❌ Error:") {
+		t.Errorf("expected error reply, got %v", mock.sent)
 	}
 }
 

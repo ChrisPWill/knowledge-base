@@ -184,6 +184,30 @@ func (b *Bot) Run(ctx context.Context) error {
 }
 
 func (b *Bot) processMessage(ctx context.Context, update Update) error {
+	entry, profile, err := b.handleMessage(ctx, update)
+	if err != nil {
+		errMsg := fmt.Sprintf("❌ Error: %v", err)
+		if sendErr := b.client.SendMessage(ctx, update.Message.Chat.ID, errMsg); sendErr != nil {
+			slog.Warn("Failed to send error message", "error", sendErr)
+		}
+		return err
+	}
+
+	if entry == "" {
+		return nil
+	}
+
+	slog.Info("Captured message", "profile", profile, "entry", strings.TrimSpace(entry))
+
+	confirmMsg := fmt.Sprintf("✅ Captured to %s journal:\n%s", profile, strings.TrimSpace(entry))
+	if err := b.client.SendMessage(ctx, update.Message.Chat.ID, confirmMsg); err != nil {
+		slog.Warn("Failed to send confirmation message", "error", err)
+	}
+
+	return nil
+}
+
+func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string, error) {
 	msg := strings.TrimSpace(update.Message.Text)
 	profile := "personal"
 	cleanMsg := msg
@@ -197,11 +221,11 @@ func (b *Bot) processMessage(ctx context.Context, update Update) error {
 		cleanMsg = strings.TrimPrefix(msg, "/p ")
 		cleanMsg = strings.TrimPrefix(cleanMsg, "/personal ")
 	}
-	
+
 	cleanMsg = strings.TrimSpace(cleanMsg)
 	if cleanMsg == "" {
 		slog.Debug("Ignoring empty message", "update_id", update.UpdateID)
-		return nil
+		return "", "", nil
 	}
 
 	isTodo := false
@@ -222,7 +246,7 @@ func (b *Bot) processMessage(ctx context.Context, update Update) error {
 	journalFile := filepath.Join(journalDir, dateStr+".md")
 
 	if err := os.MkdirAll(journalDir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", journalDir, err)
+		return "", "", fmt.Errorf("failed to create directory %s: %w", journalDir, err)
 	}
 
 	var entry string
@@ -233,19 +257,13 @@ func (b *Bot) processMessage(ctx context.Context, update Update) error {
 	}
 	f, err := os.OpenFile(journalFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("failed to open file %s: %w", journalFile, err)
+		return "", "", fmt.Errorf("failed to open file %s: %w", journalFile, err)
 	}
 	defer f.Close()
 
 	if _, err := f.WriteString(entry); err != nil {
-		return fmt.Errorf("failed to write to file %s: %w", journalFile, err)
+		return "", "", fmt.Errorf("failed to write to file %s: %w", journalFile, err)
 	}
 
-	slog.Info("Captured message", "profile", profile, "message", cleanMsg)
-	
-	if err := b.client.SendMessage(ctx, update.Message.Chat.ID, fmt.Sprintf("Captured to %s journal.", profile)); err != nil {
-		slog.Warn("Failed to send confirmation message", "error", err)
-	}
-	
-	return nil
+	return entry, profile, nil
 }

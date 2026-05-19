@@ -1,0 +1,5 @@
+# This directory is a Syncthing folder marker.
+# Do not delete.
+
+folderID: uv9ny-jsrtj
+created: 2026-05-19T18:14:34+09:00
