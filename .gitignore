@@ -16,3 +16,10 @@ assets/
 
 # Ignore Jujutsu operational history
 .jj/
+
+# Scripts
+scripts/health-check.sh
+
+# Telegram Bot Secrets and State
+.env
+.offset
