@@ -255,6 +255,42 @@ func TestNesting(t *testing.T) {
 	}
 }
 
+func TestStubHandling(t *testing.T) {
+	caseTmpDir, err := os.MkdirTemp("", "logseq-stub-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(caseTmpDir)
+
+	mock := &mockTelegramClient{}
+	bot := NewBot(mock, filepath.Join(caseTmpDir, ".offset"))
+	bot.rootDir = caseTmpDir
+	ctx := context.Background()
+
+	// 1. Pre-create file with a single "-" stub
+	now := time.Now().Format("2006_01_02")
+	path := filepath.Join(caseTmpDir, "personal", "journals", now+".md")
+	os.MkdirAll(filepath.Dir(path), 0755)
+	os.WriteFile(path, []byte("-"), 0644)
+
+	// 2. Send message
+	bot.processMessage(ctx, Update{Message: struct {
+		Text string `json:"text"`
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+	}{Text: "Clean Note", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+
+	// 3. Verify content
+	content, _ := os.ReadFile(path)
+	if strings.HasPrefix(string(content), "--") {
+		t.Errorf("detected double bullet in content: %q", string(content))
+	}
+	if !strings.HasPrefix(string(content), "- ") {
+		t.Errorf("expected single bullet, got: %q", string(content))
+	}
+}
+
 func TestToggleAlso(t *testing.T) {
 	caseTmpDir, err := os.MkdirTemp("", "logseq-toggle-")
 	if err != nil {

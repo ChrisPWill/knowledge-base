@@ -339,11 +339,33 @@ func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string,
 		}
 	}
 
-	f, err := os.OpenFile(journalFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(journalFile, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to open file %s: %w", journalFile, err)
 	}
 	defer f.Close()
+
+	// Check for Logseq's default "-" stub in new files
+	info, err := f.Stat()
+	if err == nil && info.Size() > 0 {
+		content, err := io.ReadAll(f)
+		if err == nil {
+			trimmed := strings.TrimSpace(string(content))
+			if trimmed == "-" || trimmed == "" {
+				// It's a stub or empty, clear it
+				f.Truncate(0)
+				f.Seek(0, 0)
+			} else {
+				// Not a stub, move to end and ensure we start on a new line
+				f.Seek(0, 2)
+				if !strings.HasSuffix(string(content), "\n") {
+					f.WriteString("\n")
+				}
+			}
+		} else {
+			f.Seek(0, 2)
+		}
+	}
 
 	if _, err := f.WriteString(entry); err != nil {
 		return "", "", fmt.Errorf("failed to write to file %s: %w", journalFile, err)
