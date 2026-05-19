@@ -570,6 +570,84 @@ func TestStubHandling(t *testing.T) {
 	}
 }
 
+func TestLocationSupport(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bot-test-location-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mock := &mockTelegramClient{}
+	bot := NewBot(mock, filepath.Join(tmpDir, ".offset"))
+	bot.rootDir = tmpDir
+	bot.titleFetcher = func(ctx context.Context, u string) (string, error) {
+		return "Google Maps", nil
+	}
+
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	// 1. Raw Location Pin (Top Level)
+	locUpdate := Update{}
+	locUpdate.Message.Location = &Location{Latitude: 51.5074, Longitude: -0.1278}
+	locUpdate.Message.Chat.ID = 123
+
+	err = bot.processMessage(ctx, locUpdate, fixedNow)
+	if err != nil {
+		t.Fatalf("processMessage failed: %v", err)
+	}
+
+	journalPath := filepath.Join(tmpDir, "personal", "journals", "2026_05_19.md")
+	content, _ := os.ReadFile(journalPath)
+	expectedLoc := "[Google Maps](https://www.google.com/maps?q=51.507400,-0.127800)"
+	if !strings.Contains(string(content), expectedLoc) {
+		t.Errorf("expected location link %q, got: %q", expectedLoc, string(content))
+	}
+
+	// 2. Venue (Auto-nested < 1 min)
+	venueUpdate := Update{}
+	venueUpdate.Message.Venue = &Venue{
+		Location: Location{Latitude: 51.5033, Longitude: -0.1195},
+		Title:    "London Eye",
+		Address:  "Riverside Building, County Hall",
+	}
+	venueUpdate.Message.Chat.ID = 123
+
+	// Send 30 seconds later
+	err = bot.processMessage(ctx, venueUpdate, fixedNow.Add(30*time.Second))
+	if err != nil {
+		t.Fatalf("processMessage failed: %v", err)
+	}
+
+	content, _ = os.ReadFile(journalPath)
+	// Should be nested under previous message
+	expectedVenue := "  - London Eye: Riverside Building ([Google Maps](https://www.google.com/maps?q=51.503300,-0.119500))"
+	if !strings.Contains(string(content), expectedVenue) {
+		t.Errorf("expected nested venue %q, got: %q", expectedVenue, string(content))
+	}
+	if strings.Count(string(content), "#inbox") != 1 {
+		t.Errorf("nested location should not have #inbox, but count is %d", strings.Count(string(content), "#inbox"))
+	}
+
+	// 3. Raw Location (Top Level > 1 min)
+	locUpdate2 := Update{}
+	locUpdate2.Message.Location = &Location{Latitude: 48.8584, Longitude: 2.2945}
+	locUpdate2.Message.Chat.ID = 123
+
+	// Send 2 minutes later
+	err = bot.processMessage(ctx, locUpdate2, fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("processMessage failed: %v", err)
+	}
+
+	content, _ = os.ReadFile(journalPath)
+	// Should be top-level with #inbox
+	expectedLoc2 := "- 12:02 [Google Maps](https://www.google.com/maps?q=48.858400,2.294500) #inbox"
+	if !strings.Contains(string(content), expectedLoc2) {
+		t.Errorf("expected top-level location %q, got: %q", expectedLoc2, string(content))
+	}
+}
+
 func TestToggleAlso(t *testing.T) {
 	caseTmpDir, err := os.MkdirTemp("", "logseq-toggle-")
 	if err != nil {

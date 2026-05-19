@@ -25,16 +25,29 @@ type PhotoSize struct {
 	FileSize int    `json:"file_size"`
 }
 
+type Location struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+}
+
+type Venue struct {
+	Location Location `json:"location"`
+	Title    string   `json:"title"`
+	Address  string   `json:"address"`
+}
+
 type Chat struct {
 	ID int64 `json:"id"`
 }
 
 type Message struct {
-	Text    string      `json:"text"`
-	Chat    Chat        `json:"chat"`
-	Photo   []PhotoSize `json:"photo"`
-	Voice   *PhotoSize  `json:"voice"` // Voice also has file_id
-	Caption string      `json:"caption"`
+	Text     string      `json:"text"`
+	Chat     Chat        `json:"chat"`
+	Photo    []PhotoSize `json:"photo"`
+	Voice    *PhotoSize  `json:"voice"` // Voice also has file_id
+	Location *Location   `json:"location"`
+	Venue    *Venue      `json:"venue"`
+	Caption  string      `json:"caption"`
 }
 
 type Update struct {
@@ -292,7 +305,7 @@ func (b *Bot) Run(ctx context.Context) error {
 			backoff = 1 * time.Second
 
 			for _, update := range updates {
-				if update.Message.Text != "" || len(update.Message.Photo) > 0 || update.Message.Voice != nil {
+				if update.Message.Text != "" || len(update.Message.Photo) > 0 || update.Message.Voice != nil || update.Message.Location != nil || update.Message.Venue != nil {
 					if err := b.processMessage(ctx, update, time.Now()); err != nil {
 						slog.Error("Error processing message", "update_id", update.UpdateID, "error", err)
 					}
@@ -433,6 +446,8 @@ func (b *Bot) handleMessage(ctx context.Context, update Update, now time.Time) (
 		msg = strings.TrimSpace(update.Message.Caption)
 	}
 
+	isLocation := update.Message.Location != nil || update.Message.Venue != nil
+
 	// Handle toggle timeout
 	if b.isToggledAlso && now.Sub(b.lastInteractionTime) > 5*time.Minute {
 		b.isToggledAlso = false
@@ -450,6 +465,9 @@ func (b *Bot) handleMessage(ctx context.Context, update Update, now time.Time) (
 		if !hasPrefix {
 			isAlso = true
 		}
+	} else if isLocation && now.Sub(b.lastInteractionTime) < 1*time.Minute {
+		// Auto-nest locations sent within 1 minute of previous message
+		isAlso = true
 	}
 
 	var profile string
@@ -479,6 +497,34 @@ func (b *Bot) handleMessage(ctx context.Context, update Update, now time.Time) (
 		}
 
 		cleanMsg = strings.TrimSpace(cleanMsg)
+	}
+
+	// Handle Location/Venue
+	if isLocation {
+		var lat, lon float64
+		var locText string
+		var u string
+
+		if update.Message.Venue != nil {
+			lat = update.Message.Venue.Location.Latitude
+			lon = update.Message.Venue.Location.Longitude
+			title := update.Message.Venue.Title
+			address := update.Message.Venue.Address
+			// Clean up address (often contains title or redundant info)
+			address = strings.Split(address, ",")[0]
+			u = fmt.Sprintf("https://www.google.com/maps?q=%f,%f", lat, lon)
+			locText = fmt.Sprintf("%s: %s (%s)", title, address, u)
+		} else {
+			lat = update.Message.Location.Latitude
+			lon = update.Message.Location.Longitude
+			locText = fmt.Sprintf("https://www.google.com/maps?q=%f,%f", lat, lon)
+		}
+
+		if cleanMsg != "" {
+			cleanMsg = locText + " " + cleanMsg
+		} else {
+			cleanMsg = locText
+		}
 	}
 
 	// Handle media
