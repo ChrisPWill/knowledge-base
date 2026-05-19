@@ -558,6 +558,43 @@ func (b *Bot) handleMessage(ctx context.Context, update Update, now time.Time) (
 		}
 	}
 
+	// Dynamic Tag Mapping from "personal/pages/Telegram Rules.md"
+	// Expected format:
+	// - #tag: keyword1, keyword2
+	rulesFile := filepath.Join(b.rootDir, "personal", "pages", "Telegram Rules.md")
+	if rulesContent, err := os.ReadFile(rulesFile); err == nil {
+		lines := strings.Split(string(rulesContent), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "- #") {
+				continue
+			}
+			parts := strings.SplitN(line[2:], ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			tag := strings.TrimSpace(parts[0])
+			if !strings.HasPrefix(tag, "#") {
+				tag = "#" + tag
+			}
+			keywords := strings.Split(parts[1], ",")
+			for _, kw := range keywords {
+				kw = strings.TrimSpace(kw)
+				if kw == "" {
+					continue
+				}
+				// Case-insensitive match for whole word
+				re := regexp.MustCompile("(?i)\\b" + regexp.QuoteMeta(kw) + "\\b")
+				if re.MatchString(cleanMsg) {
+					if !strings.Contains(cleanMsg, tag) {
+						cleanMsg += " " + tag
+					}
+					break
+				}
+			}
+		}
+	}
+
 	// Natural Language Scheduling
 	var scheduleMarker string
 	triggers := []struct {

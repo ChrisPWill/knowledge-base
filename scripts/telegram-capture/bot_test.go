@@ -82,6 +82,49 @@ func TestDailyReview(t *testing.T) {
 	}
 }
 
+func TestKeywordMapping(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bot-test-rules-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create rules file
+	rulesDir := filepath.Join(tmpDir, "personal", "pages")
+	os.MkdirAll(rulesDir, 0755)
+	rulesContent := "- #fitness: Gym, Workout\n- #work: Meeting, Sync, Call\n"
+	os.WriteFile(filepath.Join(rulesDir, "Telegram Rules.md"), []byte(rulesContent), 0644)
+
+	mock := &mockTelegramClient{}
+	bot := NewBot(mock, filepath.Join(tmpDir, ".offset"))
+	bot.rootDir = tmpDir
+
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	// Test Gym message
+	err = bot.processMessage(ctx, Update{Message: Message{Text: "Gym session", Chat: Chat{ID: 1}}}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	journalPath := filepath.Join(tmpDir, "personal", "journals", "2026_05_19.md")
+	content, _ := os.ReadFile(journalPath)
+	if !strings.Contains(string(content), "#fitness") {
+		t.Errorf("expected #fitness tag, got: %s", string(content))
+	}
+
+	// Test Meeting message
+	err = bot.processMessage(ctx, Update{Message: Message{Text: "Project Meeting", Chat: Chat{ID: 1}}}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, _ = os.ReadFile(journalPath)
+	if !strings.Contains(string(content), "#work") {
+		t.Errorf("expected #work tag, got: %s", string(content))
+	}
+}
+
 func TestMediaSupport(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "bot-test-media-*")
 	if err != nil {
@@ -158,9 +201,9 @@ func TestProcessMessage(t *testing.T) {
 		{
 			name:           "Work prefix",
 			msg:            "/work Meeting notes",
-			expected:       "Meeting notes #inbox",
+			expected:       "Meeting notes #work",
 			profile:        "work",
-			expectedFormat: `^- \d{2}:\d{2} Meeting notes #inbox\n$`,
+			expectedFormat: `^- \d{2}:\d{2} Meeting notes #work\n$`,
 		},
 		{
 			name:           "TODO mixed case",
@@ -280,7 +323,7 @@ func TestProcessMessage(t *testing.T) {
 			msg:            "Meeting next friday",
 			expected:       "Meeting next friday",
 			profile:        "personal",
-			expectedFormat: `^- 12:00 Meeting next friday #inbox\n$`,
+			expectedFormat: `^- 12:00 Meeting next friday #work\n$`,
 		},
 		{
 			name:           "Implicit Deadline tomorrow",
@@ -297,11 +340,18 @@ func TestProcessMessage(t *testing.T) {
 			expectedFormat: `^- TODO 12:00 submit report DEADLINE: <2026-05-19 Tue> #inbox\n$`,
 		},
 		{
-			name:           "No Implicit Deadline for non-todo today",
-			msg:            "Meeting today",
-			expected:       "Meeting today",
+			name:           "Keyword mapping fitness",
+			msg:            "Gym today",
+			expected:       "#fitness",
 			profile:        "personal",
-			expectedFormat: `^- 12:00 Meeting today #inbox\n$`,
+			expectedFormat: `^- 12:00 Gym today #fitness\n$`,
+		},
+		{
+			name:           "Keyword mapping work",
+			msg:            "Meeting with team",
+			expected:       "#work",
+			profile:        "personal",
+			expectedFormat: `^- 12:00 Meeting with team #work\n$`,
 		},
 	}
 
@@ -318,6 +368,13 @@ func TestProcessMessage(t *testing.T) {
 			mock := &mockTelegramClient{}
 			bot := NewBot(mock, filepath.Join(caseTmpDir, ".offset"))
 			bot.rootDir = caseTmpDir
+
+			// Setup rules for mapping tests
+			rulesDir := filepath.Join(caseTmpDir, "personal", "pages")
+			os.MkdirAll(rulesDir, 0755)
+			rulesContent := "- #fitness: Gym, Workout\n- #work: Meeting, Sync, Call\n"
+			os.WriteFile(filepath.Join(rulesDir, "Telegram Rules.md"), []byte(rulesContent), 0644)
+
 			bot.titleFetcher = func(ctx context.Context, u string) (string, error) {
 				if u == "https://example.com" {
 					return "Example", nil
