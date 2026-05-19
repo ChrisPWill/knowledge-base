@@ -16,7 +16,7 @@
           pname = "telegram-capture";
           version = "0.1.0";
           src = ./scripts/telegram-capture;
-          vendorHash = null;
+          vendorHash = "sha256-Vcw4KsE2m27MTEOc+hnkvu3sFmtGyFO+hML3SFksSDU=";
         };
 
         devShells.default = pkgs.mkShell {
