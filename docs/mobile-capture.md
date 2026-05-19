@@ -48,17 +48,31 @@ Send a message to your bot to capture it. The bot provides immediate feedback fo
 
 ### Smart Features
 - **TODOs**: Start a message with `todo ` (case-insensitive) to create a Logseq TODO.
-    - Input: `todo Buy milk`
-    - Result: `- TODO HH:MM Buy milk #inbox`
+- **Priorities**: Use `A `, `B `, or `C ` at the start of a message (after profile/todo).
+    - Input: `todo A fix bug` -> `- TODO [#A] HH:MM fix bug #inbox`
+- **Nesting (Also Mode)**:
+    - `also [note]` - Nests the note under the previous entry (indented by 2 spaces).
+    - `toggle also` - Enables auto-nesting mode for 5 minutes of inactivity.
 - **Automatic Tagging**: If a message contains no `#tags`, `#inbox` is automatically appended.
-    - Input: `Meeting with Sarah`
-    - Result: `- HH:MM Meeting with Sarah #inbox`
-    - Input: `Important #idea`
-    - Result: `- HH:MM Important #idea` (no `#inbox` added)
+- **URL Title Scraping**: Links are automatically expanded with their page titles.
+    - Input: `https://example.com` -> `[Example Domain](https://example.com)`
+- **Natural Language Scheduling**:
+    - `... scheduled for tomorrow` -> `SCHEDULED: <YYYY-MM-DD Day>`
+    - `... deadline next friday` -> `DEADLINE: <YYYY-MM-DD Day>`
+- **Media Support**:
+    - Photos and Voice Notes are downloaded to the `assets/` folder and linked in the journal.
+    - Captions are supported and appended to the link.
+
+### Help
+Send `help` to see a general overview, or `help [topic]` for detailed info:
+- `help nesting`
+- `help priority`
+- `help scheduling`
+- `help media`
 
 ### Bot Feedback
 - ✅ **Success**: The bot will reply with the profile used and the exact formatted entry.
-- ❌ **Error**: If something goes wrong (e.g., directory missing), the bot will reply with a detailed error message.
+- ❌ **Error**: If something goes wrong, the bot will reply with a detailed error message.
 
 ## Automation
-For a permanent setup, it is recommended to run this script as a systemd service (managed via Home Manager or NixOS). This ensures it is always listening in the background and starts automatically on boot.
+For a permanent setup, it is recommended to run this script as a systemd service.

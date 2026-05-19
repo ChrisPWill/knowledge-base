@@ -25,6 +25,74 @@ func (m *mockTelegramClient) SendMessage(ctx context.Context, chatID int64, text
 	return nil
 }
 
+func (m *mockTelegramClient) GetFile(ctx context.Context, fileID string) (string, error) {
+	return "mock_path_" + fileID, nil
+}
+
+func (m *mockTelegramClient) DownloadFile(ctx context.Context, filePath string, destPath string) error {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(destPath, []byte("mock content"), 0644)
+}
+
+func TestMediaSupport(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bot-test-media-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mock := &mockTelegramClient{}
+	bot := NewBot(mock, filepath.Join(tmpDir, ".offset"))
+	bot.rootDir = tmpDir
+
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	// 1. Photo with caption
+	photoUpdate := Update{}
+	photoUpdate.Message.Photo = []PhotoSize{{FileID: "photo123"}}
+	photoUpdate.Message.Caption = "Lunch"
+	photoUpdate.Message.Chat.ID = 123
+
+	err = bot.processMessage(ctx, photoUpdate, fixedNow)
+	if err != nil {
+		t.Fatalf("processMessage failed: %v", err)
+	}
+
+	journalPath := filepath.Join(tmpDir, "personal", "journals", "2026_05_19.md")
+	content, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expectedEntry := "- 12:00 ![[assets/capture_20260519_120000.jpg]] Lunch #inbox\n"
+	if string(content) != expectedEntry {
+		t.Errorf("expected %q, got %q", expectedEntry, string(content))
+	}
+
+	assetPath := filepath.Join(tmpDir, "personal", "assets", "capture_20260519_120000.jpg")
+	if _, err := os.Stat(assetPath); os.IsNotExist(err) {
+		t.Errorf("asset file was not created: %s", assetPath)
+	}
+
+	// 2. Voice note
+	voiceUpdate := Update{}
+	voiceUpdate.Message.Voice = &PhotoSize{FileID: "voice456"}
+	voiceUpdate.Message.Chat.ID = 123
+
+	err = bot.processMessage(ctx, voiceUpdate, fixedNow)
+	if err != nil {
+		t.Fatalf("processMessage failed: %v", err)
+	}
+
+	content, _ = os.ReadFile(journalPath)
+	if !strings.Contains(string(content), "[Voice Note](assets/capture_20260519_120000.ogg)") {
+		t.Errorf("journal does not contain voice note link")
+	}
+}
+
 func TestProcessMessage(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -85,7 +153,19 @@ func TestProcessMessage(t *testing.T) {
 		{
 			name:     "Help command",
 			msg:      "help",
-			expected: "help-sentinel", // Special value to skip file checks
+			expected: "sentinel:Telegram Capture Help",
+			profile:  "personal",
+		},
+		{
+			name:     "Help nesting",
+			msg:      "help nesting",
+			expected: "sentinel:Nesting Help",
+			profile:  "personal",
+		},
+		{
+			name:     "Help priority",
+			msg:      "help priority",
+			expected: "sentinel:Priority Help",
 			profile:  "personal",
 		},
 		{
@@ -116,7 +196,23 @@ func TestProcessMessage(t *testing.T) {
 			profile:        "personal",
 			expectedFormat: `^- \d{2}:\d{2} Check \[Example\]\(https://example.com\) #inbox\n$`,
 		},
+		{
+			name:           "Scheduled Tomorrow",
+			msg:            "todo Buy milk scheduled for tomorrow",
+			expected:       "SCHEDULED: <2026-05-20 Wed>",
+			profile:        "personal",
+			expectedFormat: `^- TODO 12:00 Buy milk SCHEDULED: <2026-05-20 Wed> #inbox\n$`,
+		},
+		{
+			name:           "Deadline next Friday",
+			msg:            "todo submit report deadline next friday",
+			expected:       "DEADLINE: <2026-05-22 Fri>",
+			profile:        "personal",
+			expectedFormat: `^- TODO 12:00 submit report DEADLINE: <2026-05-22 Fri> #inbox\n$`,
+		},
 	}
+
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -141,7 +237,7 @@ func TestProcessMessage(t *testing.T) {
 			update.Message.Text = tc.msg
 			update.Message.Chat.ID = 123
 
-			err = bot.processMessage(ctx, update)
+			err = bot.processMessage(ctx, update, fixedNow)
 			if err != nil {
 				t.Fatalf("processMessage failed: %v", err)
 			}
@@ -150,9 +246,10 @@ func TestProcessMessage(t *testing.T) {
 				return
 			}
 
-			if tc.expected == "help-sentinel" {
-				if len(mock.sent) != 1 || !strings.Contains(mock.sent[0], "Telegram Capture Help") {
-					t.Errorf("expected help message, got %v", mock.sent)
+			if strings.HasPrefix(tc.expected, "sentinel:") {
+				substring := strings.TrimPrefix(tc.expected, "sentinel:")
+				if len(mock.sent) != 1 || !strings.Contains(mock.sent[0], substring) {
+					t.Errorf("expected message containing %q, got %v", substring, mock.sent)
 				}
 				return
 			}
@@ -221,7 +318,8 @@ func TestProcessMessageError(t *testing.T) {
 	update.Message.Text = "This should fail"
 	update.Message.Chat.ID = 123
 
-	err = bot.processMessage(ctx, update)
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	err = bot.processMessage(ctx, update, fixedNow)
 	if err == nil {
 		t.Fatal("expected error but got nil")
 	}
@@ -242,25 +340,25 @@ func TestNesting(t *testing.T) {
 	bot := NewBot(mock, filepath.Join(caseTmpDir, ".offset"))
 	bot.rootDir = caseTmpDir
 	ctx := context.Background()
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 
 	// 1. Send a parent note
 	update1 := Update{}
 	update1.Message.Text = "Parent Note"
 	update1.Message.Chat.ID = 123
-	bot.processMessage(ctx, update1)
+	bot.processMessage(ctx, update1, fixedNow)
 
 	// 2. Send an "also" note (within 1 hour)
 	update2 := Update{}
 	update2.Message.Text = "also Child 1"
 	update2.Message.Chat.ID = 123
-	bot.processMessage(ctx, update2)
+	bot.processMessage(ctx, update2, fixedNow.Add(time.Minute))
 
 	// 3. Send another "also" note (fake time to > 1 hour)
-	bot.lastEntryTime = bot.lastEntryTime.Add(-2 * time.Hour)
 	update3 := Update{}
 	update3.Message.Text = "also Child 2"
 	update3.Message.Chat.ID = 123
-	bot.processMessage(ctx, update3)
+	bot.processMessage(ctx, update3, fixedNow.Add(2*time.Hour))
 
 	// Verify file content
 	now := time.Now().Format("2006_01_02")
@@ -309,12 +407,8 @@ func TestStubHandling(t *testing.T) {
 	os.WriteFile(path, []byte("-"), 0644)
 
 	// 2. Send message
-	bot.processMessage(ctx, Update{Message: struct {
-		Text string `json:"text"`
-		Chat struct {
-			ID int64 `json:"id"`
-		} `json:"chat"`
-	}{Text: "Clean Note", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	bot.processMessage(ctx, Update{Message: Message{Text: "Clean Note", Chat: Chat{ID: 1}}}, fixedNow)
 
 	// 3. Verify content
 	content, _ := os.ReadFile(path)
@@ -337,65 +431,31 @@ func TestToggleAlso(t *testing.T) {
 	bot := NewBot(mock, filepath.Join(caseTmpDir, ".offset"))
 	bot.rootDir = caseTmpDir
 	ctx := context.Background()
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 
 	// 1. Send parent
-	bot.processMessage(ctx, Update{Message: struct {
-		Text string `json:"text"`
-		Chat struct {
-			ID int64 `json:"id"`
-		} `json:"chat"`
-	}{Text: "Parent", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+	bot.processMessage(ctx, Update{Message: Message{Text: "Parent", Chat: Chat{ID: 1}}}, fixedNow)
 
 	// 2. Enable toggle
-	bot.processMessage(ctx, Update{Message: struct {
-		Text string `json:"text"`
-		Chat struct {
-			ID int64 `json:"id"`
-		} `json:"chat"`
-	}{Text: "toggle also", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+	bot.processMessage(ctx, Update{Message: Message{Text: "toggle also", Chat: Chat{ID: 1}}}, fixedNow)
 
 	// 3. Send message (should auto-nest, no #inbox)
-	bot.processMessage(ctx, Update{Message: struct {
-		Text string `json:"text"`
-		Chat struct {
-			ID int64 `json:"id"`
-		} `json:"chat"`
-	}{Text: "Auto Nested", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+	bot.processMessage(ctx, Update{Message: Message{Text: "Auto Nested", Chat: Chat{ID: 1}}}, fixedNow.Add(time.Minute))
 
 	// 4. Force timeout
 	bot.lastInteractionTime = bot.lastInteractionTime.Add(-6 * time.Minute)
 
 	// 5. Send message (should be top-level, with #inbox)
-	bot.processMessage(ctx, Update{Message: struct {
-		Text string `json:"text"`
-		Chat struct {
-			ID int64 `json:"id"`
-		} `json:"chat"`
-	}{Text: "Top Level Again", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+	bot.processMessage(ctx, Update{Message: Message{Text: "Top Level Again", Chat: Chat{ID: 1}}}, fixedNow.Add(10*time.Minute))
 
 	// 6. Enable toggle again
-	bot.processMessage(ctx, Update{Message: struct {
-		Text string `json:"text"`
-		Chat struct {
-			ID int64 `json:"id"`
-		} `json:"chat"`
-	}{Text: "toggle also", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+	bot.processMessage(ctx, Update{Message: Message{Text: "toggle also", Chat: Chat{ID: 1}}}, fixedNow.Add(11*time.Minute))
 
 	// 7. Disable toggle immediately
-	bot.processMessage(ctx, Update{Message: struct {
-		Text string `json:"text"`
-		Chat struct {
-			ID int64 `json:"id"`
-		} `json:"chat"`
-	}{Text: "toggle also", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+	bot.processMessage(ctx, Update{Message: Message{Text: "toggle also", Chat: Chat{ID: 1}}}, fixedNow.Add(12*time.Minute))
 
 	// 8. Send message (should be top-level)
-	bot.processMessage(ctx, Update{Message: struct {
-		Text string `json:"text"`
-		Chat struct {
-			ID int64 `json:"id"`
-		} `json:"chat"`
-	}{Text: "Disabled Manually", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+	bot.processMessage(ctx, Update{Message: Message{Text: "Disabled Manually", Chat: Chat{ID: 1}}}, fixedNow.Add(13*time.Minute))
 
 	// Verify file content
 	now := time.Now().Format("2006_01_02")

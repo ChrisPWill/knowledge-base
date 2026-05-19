@@ -13,19 +13,33 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/tj/go-naturaldate"
 )
 
 var tagRegex = regexp.MustCompile(`(^|\s)#\S+`)
 var urlRegex = regexp.MustCompile(`https?://[^\s]+`)
 
+type PhotoSize struct {
+	FileID   string `json:"file_id"`
+	FileSize int    `json:"file_size"`
+}
+
+type Chat struct {
+	ID int64 `json:"id"`
+}
+
+type Message struct {
+	Text    string      `json:"text"`
+	Chat    Chat        `json:"chat"`
+	Photo   []PhotoSize `json:"photo"`
+	Voice   *PhotoSize  `json:"voice"` // Voice also has file_id
+	Caption string      `json:"caption"`
+}
+
 type Update struct {
-	UpdateID int `json:"update_id"`
-	Message  struct {
-		Text string `json:"text"`
-		Chat struct {
-			ID int64 `json:"id"`
-		} `json:"chat"`
-	} `json:"message"`
+	UpdateID int     `json:"update_id"`
+	Message  Message `json:"message"`
 }
 
 type GetUpdatesResponse struct {
@@ -36,11 +50,13 @@ type GetUpdatesResponse struct {
 type TelegramClient interface {
 	GetUpdates(ctx context.Context, offset int, timeout int) ([]Update, error)
 	SendMessage(ctx context.Context, chatID int64, text string) error
+	GetFile(ctx context.Context, fileID string) (string, error)
+	DownloadFile(ctx context.Context, filePath string, destPath string) error
 }
 
 type httpTelegramClient struct {
-	token  string
-	apiURL string
+	token      string
+	apiURL     string
 	httpClient *http.Client
 }
 
@@ -56,7 +72,7 @@ func NewHTTPTelegramClient(token string) *httpTelegramClient {
 
 func (c *httpTelegramClient) GetUpdates(ctx context.Context, offset int, timeout int) ([]Update, error) {
 	u := fmt.Sprintf("%s/getUpdates?offset=%d&timeout=%d", c.apiURL, offset, timeout)
-	
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -105,6 +121,77 @@ func (c *httpTelegramClient) SendMessage(ctx context.Context, chatID int64, text
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("telegram api returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+func (c *httpTelegramClient) GetFile(ctx context.Context, fileID string) (string, error) {
+	u := fmt.Sprintf("%s/getFile?file_id=%s", c.apiURL, fileID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("telegram api returned status %d", resp.StatusCode)
+	}
+
+	var data struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			FilePath string `json:"file_path"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if !data.OK {
+		return "", fmt.Errorf("telegram api returned ok=false")
+	}
+
+	return data.Result.FilePath, nil
+}
+
+func (c *httpTelegramClient) DownloadFile(ctx context.Context, filePath string, destPath string) error {
+	u := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", c.token, filePath)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to download file: status %d", resp.StatusCode)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	f, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer f.Close()
+
+	_, err = io.Copy(f, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to save file: %w", err)
 	}
 
 	return nil
@@ -188,7 +275,7 @@ func (b *Bot) Run(ctx context.Context) error {
 					continue
 				}
 				slog.Error("Error getting updates", "error", err, "retry_in", backoff)
-				
+
 				select {
 				case <-time.After(backoff):
 					backoff *= 2
@@ -205,8 +292,8 @@ func (b *Bot) Run(ctx context.Context) error {
 			backoff = 1 * time.Second
 
 			for _, update := range updates {
-				if update.Message.Text != "" {
-					if err := b.processMessage(ctx, update); err != nil {
+				if update.Message.Text != "" || len(update.Message.Photo) > 0 || update.Message.Voice != nil {
+					if err := b.processMessage(ctx, update, time.Now()); err != nil {
 						slog.Error("Error processing message", "update_id", update.UpdateID, "error", err)
 					}
 				}
@@ -215,7 +302,7 @@ func (b *Bot) Run(ctx context.Context) error {
 					slog.Error("Error saving offset", "offset", offset, "error", err)
 				}
 			}
-			
+
 			// Small sleep to avoid tight loop if GetUpdates returns immediately
 			select {
 			case <-time.After(500 * time.Millisecond):
@@ -225,25 +312,42 @@ func (b *Bot) Run(ctx context.Context) error {
 	}
 }
 
-func (b *Bot) processMessage(ctx context.Context, update Update) error {
+func (b *Bot) processMessage(ctx context.Context, update Update, now time.Time) error {
 	msg := strings.TrimSpace(update.Message.Text)
 	lowerMsg := strings.ToLower(msg)
-	now := time.Now()
 
-	if lowerMsg == "help" {
-		helpText := "🤖 *Telegram Capture Help*\n\n" +
-			"*Profiles:*\n" +
-			"• `/w [note]` or `/work [note]` - Work journal\n" +
-			"• `/p [note]` or `/personal [note]` - Personal journal\n" +
-			"• `[note]` - Defaults to personal\n\n" +
-			"*Nesting:* \n" +
-			"• `also [note]` - Nest note under the last entry\n" +
-			"• `toggle also` - Enable auto-nesting mode (5m timeout)\n\n" +
-			"*Features:*\n" +
-			"• `todo [note]` - Captures as a Logseq TODO\n" +
-			"• Automatic `#inbox` tag added if no tags are present (top-level only)\n\n" +
-			"*Example:*\n" +
-			"`todo Buy milk #shopping`"
+	if strings.HasPrefix(lowerMsg, "help") {
+		topic := strings.TrimSpace(strings.TrimPrefix(lowerMsg, "help"))
+		var helpText string
+		switch topic {
+		case "nesting":
+			helpText = "*Nesting Help*\n\n" +
+				"• `also [note]` - Nest under the last entry\n" +
+				"• `toggle also` - Enable auto-nesting mode (5m timeout)\n" +
+				"• Auto-nesting is disabled if a profile prefix (/w, /p) is used."
+		case "priority":
+			helpText = "*Priority Help*\n\n" +
+				"• `A [note]` - High priority ([#A])\n" +
+				"• `B [note]` - Medium priority ([#B])\n" +
+				"• `C [note]` - Low priority ([#C])\n" +
+				"• Can be combined with `todo`: `todo A fix bug`"
+		case "scheduling":
+			helpText = "*Scheduling Help*\n\n" +
+				"• `... scheduled for tomorrow` -> SCHEDULED: <YYYY-MM-DD Day>\n" +
+				"• `... deadline next friday` -> DEADLINE: <YYYY-MM-DD Day>"
+		case "media":
+			helpText = "*Media Help*\n\n" +
+				"• Photos and voice notes are downloaded to Logseq's `assets/` folder.\n" +
+				"• Captions are supported and appended to the link."
+		default:
+			helpText = "🤖 *Telegram Capture Help*\n\n" +
+				"*Profiles:*\n" +
+				"• `/w [note]` or `/work [note]` - Work journal\n" +
+				"• `/p [note]` or `/personal [note]` - Personal journal\n" +
+				"• `[note]` - Defaults to personal\n\n" +
+				"*Topics:* `help nesting`, `help priority`, `help scheduling`, `help media`"
+		}
+
 		if err := b.client.SendMessage(ctx, update.Message.Chat.ID, helpText); err != nil {
 			slog.Warn("Failed to send help message", "error", err)
 		}
@@ -265,7 +369,7 @@ func (b *Bot) processMessage(ctx context.Context, update Update) error {
 		return nil
 	}
 
-	entry, profile, err := b.handleMessage(ctx, update)
+	entry, profile, err := b.handleMessage(ctx, update, now)
 	if err != nil {
 		errMsg := fmt.Sprintf("❌ Error: %v", err)
 		if sendErr := b.client.SendMessage(ctx, update.Message.Chat.ID, errMsg); sendErr != nil {
@@ -288,9 +392,11 @@ func (b *Bot) processMessage(ctx context.Context, update Update) error {
 	return nil
 }
 
-func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string, error) {
+func (b *Bot) handleMessage(ctx context.Context, update Update, now time.Time) (string, string, error) {
 	msg := strings.TrimSpace(update.Message.Text)
-	now := time.Now()
+	if msg == "" && update.Message.Caption != "" {
+		msg = strings.TrimSpace(update.Message.Caption)
+	}
 
 	// Handle toggle timeout
 	if b.isToggledAlso && now.Sub(b.lastInteractionTime) > 5*time.Minute {
@@ -338,11 +444,52 @@ func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string,
 		}
 
 		cleanMsg = strings.TrimSpace(cleanMsg)
-		if cleanMsg == "" {
-			slog.Debug("Ignoring empty message", "update_id", update.UpdateID)
-			return "", "", nil
+	}
+
+	// Handle media
+	if len(update.Message.Photo) > 0 || update.Message.Voice != nil {
+		var fileID string
+		var extension string
+		var format string
+
+		if len(update.Message.Photo) > 0 {
+			// Take the last photo (usually the largest)
+			fileID = update.Message.Photo[len(update.Message.Photo)-1].FileID
+			extension = ".jpg"
+			format = "![[assets/%s]]"
+		} else {
+			fileID = update.Message.Voice.FileID
+			extension = ".ogg"
+			format = "[Voice Note](assets/%s)"
 		}
 
+		filePath, err := b.client.GetFile(ctx, fileID)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to get file path: %w", err)
+		}
+
+		assetName := fmt.Sprintf("capture_%s%s", now.Format("20060102_150405"), extension)
+		assetDir := filepath.Join(b.rootDir, profile, "assets")
+		assetPath := filepath.Join(assetDir, assetName)
+
+		if err := b.client.DownloadFile(ctx, filePath, assetPath); err != nil {
+			return "", "", fmt.Errorf("failed to download asset: %w", err)
+		}
+
+		mediaLink := fmt.Sprintf(format, assetName)
+		if cleanMsg != "" {
+			cleanMsg = mediaLink + " " + cleanMsg
+		} else {
+			cleanMsg = mediaLink
+		}
+	}
+
+	if cleanMsg == "" {
+		slog.Debug("Ignoring empty message", "update_id", update.UpdateID)
+		return "", "", nil
+	}
+
+	if journalFile == "" {
 		dateStr = now.Format("2006_01_02")
 		journalDir = filepath.Join(b.rootDir, profile, "journals")
 		journalFile = filepath.Join(journalDir, dateStr+".md")
@@ -367,11 +514,6 @@ func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string,
 		}
 	}
 
-	// Only default tag top-level notes
-	if !isAlso && !tagRegex.MatchString(cleanMsg) {
-		cleanMsg = cleanMsg + " #inbox"
-	}
-
 	// URL scraping
 	urls := urlRegex.FindAllString(cleanMsg, -1)
 	for _, u := range urls {
@@ -381,22 +523,52 @@ func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string,
 		}
 	}
 
+	// Natural Language Scheduling
+	var scheduleMarker string
+	for _, trigger := range []struct {
+		prefix string
+		marker string
+	}{
+		{"scheduled for ", "SCHEDULED"},
+		{"deadline ", "DEADLINE"},
+	} {
+		lower := strings.ToLower(cleanMsg)
+		idx := strings.Index(lower, trigger.prefix)
+		if idx != -1 {
+			dateStr := cleanMsg[idx+len(trigger.prefix):]
+			parsedDate, err := naturaldate.Parse(dateStr, now)
+			if err == nil {
+				scheduleMarker = fmt.Sprintf(" %s: <%s %s>",
+					trigger.marker,
+					parsedDate.Format("2006-01-02"),
+					parsedDate.Format("Mon"))
+				cleanMsg = strings.TrimSpace(cleanMsg[:idx])
+				break
+			}
+		}
+	}
+
+	tagSuffix := ""
+	if !isAlso && !tagRegex.MatchString(cleanMsg) {
+		tagSuffix = " #inbox"
+	}
+
 	timeStr := now.Format("15:04")
 	var entry string
 
 	if isAlso && b.lastJournalFile != "" {
 		indent := "  "
 		if now.Sub(b.lastEntryTime) > time.Hour {
-			entry = fmt.Sprintf("%s- %s%s %s\n", indent, priority, timeStr, cleanMsg)
+			entry = fmt.Sprintf("%s- %s%s %s%s%s\n", indent, priority, timeStr, cleanMsg, scheduleMarker, tagSuffix)
 		} else {
-			entry = fmt.Sprintf("%s- %s%s\n", indent, priority, cleanMsg)
+			entry = fmt.Sprintf("%s- %s%s%s%s\n", indent, priority, cleanMsg, scheduleMarker, tagSuffix)
 		}
 	} else {
 		todoPrefix := ""
 		if isTodo {
 			todoPrefix = "TODO "
 		}
-		entry = fmt.Sprintf("- %s%s%s %s\n", todoPrefix, priority, timeStr, cleanMsg)
+		entry = fmt.Sprintf("- %s%s%s %s%s%s\n", todoPrefix, priority, timeStr, cleanMsg, scheduleMarker, tagSuffix)
 	}
 
 	f, err := os.OpenFile(journalFile, os.O_RDWR|os.O_CREATE, 0644)
