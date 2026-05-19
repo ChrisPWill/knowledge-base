@@ -1,0 +1,42 @@
+# Logseq Zettelkasten Boilerplate (Local-First)
+
+This repository provides a structured boilerplate for a local-first Zettelkasten system using Logseq. It uses Jujutsu (`jj`) for version control of configurations and documentation, while note content is synced via Syncthing.
+
+## Structure
+- `personal/`: Logseq graph for personal notes.
+- `work/`: Logseq graph for professional notes.
+- `docs/`: System documentation and guides.
+- `scripts/`: Utility scripts for system health.
+
+## Getting Started
+
+1. **Initialize the Repository**:
+   ```bash
+   jj git init --colocate
+   ```
+
+2. **Configure Logseq**:
+   - Open Logseq.
+   - Click "Add new graph".
+   - Select the `personal/` or `work/` directory.
+   - Logseq will use the `.logseq/` settings already in those folders.
+
+3. **Setup Syncthing**:
+   - Add the `personal/` and `work/` folders to Syncthing.
+   - Share them across your devices (Desktop, Laptop, Mobile).
+   - Ensure `journals/`, `pages/`, and `assets/` are synced, but `.git/` and `.jj/` are **not** shared via Syncthing (they are managed by `jj`).
+
+## Version Control with Jujutsu (jj)
+
+This repo uses a colocated Git/Jujutsu setup. Use `jj` for daily operations:
+
+- `jj st`: View status.
+- `jj log`: View revision history.
+- `jj desc -m "Update config"`: Add a message to the current change.
+- `jj git push`: Push changes to a remote Git server.
+
+## Health Check
+Run the health check script to ensure no sensitive note content is being accidentally tracked:
+```bash
+./scripts/health-check.sh
+```

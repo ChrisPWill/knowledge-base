@@ -1,0 +1,15 @@
+{:default-queries
+ {:journals
+  [{:title "📅 NEXT"
+    :query [:find (pull ?h [*])
+            :where
+            [?h :block/marker ?m]
+            [(contains? #{"NOW" "LATER" "TODO" "DOING"} ?m)]
+            (not [?h :block/scheduled ?d])
+            (not [?h :block/deadline ?d])]
+    :collapsed? false}]}
+
+ :feature/enable-flashcards? true
+ :feature/enable-journal-section? true
+ :feature/enable-whiteboards? true
+}

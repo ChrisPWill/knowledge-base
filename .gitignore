@@ -1,0 +1,18 @@
+# Ignore Logseq content directories (synced via Syncthing)
+journals/
+pages/
+assets/
+
+# Ignore Logseq cache and state tracking
+**/pages_metadata.edn
+**/graph-metadata.edn
+**/bak/
+
+# Explicitly whitelist configuration files
+!personal/.logseq/config.edn
+!personal/.logseq/custom.css
+!work/.logseq/config.edn
+!work/.logseq/custom.css
+
+# Ignore Jujutsu operational history
+.jj/

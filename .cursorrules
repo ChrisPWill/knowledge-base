@@ -1,0 +1,6 @@
+# Cursor Rules for Logseq Zettelkasten
+
+- **Confine scope**: Only edit files in `docs/`, `scripts/`, or `.logseq/` subdirectories.
+- **Do not touch content**: Ignore any directories named `journals/`, `pages/`, or `assets/`.
+- **Sync Safety**: Never modify files while a sync process might be active.
+- **VCS**: Acknowledge that this is a Jujutsu (`jj`) repository. Use `jj` commands if running shell tasks related to version control.
