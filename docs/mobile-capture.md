@@ -10,41 +10,55 @@ This project includes a lightweight Telegram bot capture system that allows you 
 3. (Optional but recommended) Set a description and profile picture for your bot.
 
 ### 2. Configure Secrets
-There are two ways to provide the bot token:
+The bot requires the `TELEGRAM_BOT_TOKEN` environment variable.
 
-#### A. Via Home Manager (Recommended)
-If you are using Nix and Home Manager, you can inject the `TELEGRAM_BOT_TOKEN` environment variable into the service or shell environment where the script runs.
-
-#### B. Local .env File
-Create a `.env` file in the root of this repository (this file is ignored by git):
+#### A. Nix/Direnv (Recommended)
+If you use `direnv`, create a `.envrc` file:
 ```bash
-TELEGRAM_BOT_TOKEN="your_token_here"
+export TELEGRAM_BOT_TOKEN="your_token_here"
+```
+
+#### B. Manual Export
+```bash
+export TELEGRAM_BOT_TOKEN="your_token_here"
 ```
 
 ### 3. Running the Capture Script
 
 #### Using Nix (Recommended)
-You can run the script directly using Nix:
+You can run the script directly from the root of the repo:
 ```bash
 nix run .
 ```
 
 #### Manual Run
-Ensure you have the Go runtime installed, then:
+Ensure you have Go installed, then:
 ```bash
 cd scripts/telegram-capture && go run .
 ```
 
 ## Usage
 
-Send a message to your bot to capture it. By default, messages go to your **personal** journal.
+Send a message to your bot to capture it. The bot provides immediate feedback for every message.
 
+### Profile Selection
 - `/w [note]` or `/work [note]` - Captures to `work/journals/YYYY_MM_DD.md`.
 - `/p [note]` or `/personal [note]` - Captures to `personal/journals/YYYY_MM_DD.md`.
 - `[note]` (no prefix) - Defaults to **personal**.
 
-### Example
-- `/w Discuss project timeline with team` -> Appends `- HH:MM Discuss project timeline with team` to today's work journal.
+### Smart Features
+- **TODOs**: Start a message with `todo ` (case-insensitive) to create a Logseq TODO.
+    - Input: `todo Buy milk`
+    - Result: `- TODO HH:MM Buy milk #inbox`
+- **Automatic Tagging**: If a message contains no `#tags`, `#inbox` is automatically appended.
+    - Input: `Meeting with Sarah`
+    - Result: `- HH:MM Meeting with Sarah #inbox`
+    - Input: `Important #idea`
+    - Result: `- HH:MM Important #idea` (no `#inbox` added)
+
+### Bot Feedback
+- ✅ **Success**: The bot will reply with the profile used and the exact formatted entry.
+- ❌ **Error**: If something goes wrong (e.g., directory missing), the bot will reply with a detailed error message.
 
 ## Automation
-For a permanent setup, it is recommended to run this script as a systemd service (managed via Home Manager or NixOS) so it is always listening for captures in the background.
+For a permanent setup, it is recommended to run this script as a systemd service (managed via Home Manager or NixOS). This ensures it is always listening in the background and starts automatically on boot.
