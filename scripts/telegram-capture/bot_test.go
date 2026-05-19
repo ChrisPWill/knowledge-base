@@ -87,6 +87,27 @@ func TestProcessMessage(t *testing.T) {
 			expected: "help-sentinel", // Special value to skip file checks
 			profile:  "personal",
 		},
+		{
+			name:           "Priority A",
+			msg:            "A critical bug",
+			expected:       "[#A]",
+			profile:        "personal",
+			expectedFormat: `^- \[#A\] \d{2}:\d{2} critical bug #inbox\n$`,
+		},
+		{
+			name:           "Priority B with TODO",
+			msg:            "todo B follow up",
+			expected:       "TODO [#B]",
+			profile:        "personal",
+			expectedFormat: `^- TODO \[#B\] \d{2}:\d{2} follow up #inbox\n$`,
+		},
+		{
+			name:           "Priority C with Profile and TODO",
+			msg:            "/work todo C minor task",
+			expected:       "TODO [#C]",
+			profile:        "work",
+			expectedFormat: `^- TODO \[#C\] \d{2}:\d{2} minor task #inbox\n$`,
+		},
 	}
 
 	for _, tc := range tests {

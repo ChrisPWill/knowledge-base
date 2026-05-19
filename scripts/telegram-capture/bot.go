@@ -321,6 +321,15 @@ func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string,
 		cleanMsg = strings.TrimSpace(cleanMsg[len("todo "):])
 	}
 
+	priority := ""
+	if len(cleanMsg) >= 2 {
+		firstTwo := strings.ToUpper(cleanMsg[:2])
+		if firstTwo == "A " || firstTwo == "B " || firstTwo == "C " {
+			priority = "[#" + string(firstTwo[0]) + "] "
+			cleanMsg = strings.TrimSpace(cleanMsg[2:])
+		}
+	}
+
 	// Only default tag top-level notes
 	if !isAlso && !tagRegex.MatchString(cleanMsg) {
 		cleanMsg = cleanMsg + " #inbox"
@@ -332,16 +341,16 @@ func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string,
 	if isAlso && b.lastJournalFile != "" {
 		indent := "  "
 		if now.Sub(b.lastEntryTime) > time.Hour {
-			entry = fmt.Sprintf("%s- %s %s\n", indent, timeStr, cleanMsg)
+			entry = fmt.Sprintf("%s- %s%s %s\n", indent, priority, timeStr, cleanMsg)
 		} else {
-			entry = fmt.Sprintf("%s- %s\n", indent, cleanMsg)
+			entry = fmt.Sprintf("%s- %s%s\n", indent, priority, cleanMsg)
 		}
 	} else {
+		todoPrefix := ""
 		if isTodo {
-			entry = fmt.Sprintf("- TODO %s %s\n", timeStr, cleanMsg)
-		} else {
-			entry = fmt.Sprintf("- %s %s\n", timeStr, cleanMsg)
+			todoPrefix = "TODO "
 		}
+		entry = fmt.Sprintf("- %s%s%s %s\n", todoPrefix, priority, timeStr, cleanMsg)
 	}
 
 	f, err := os.OpenFile(journalFile, os.O_RDWR|os.O_CREATE, 0644)
