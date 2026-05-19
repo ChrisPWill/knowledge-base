@@ -30,9 +30,9 @@ nix run .
 ```
 
 #### Manual Run
-Ensure you have `curl` and `jq` installed, then:
+Ensure you have the Go runtime installed, then:
 ```bash
-./scripts/telegram-capture.sh
+cd scripts/telegram-capture && go run .
 ```
 
 ## Usage

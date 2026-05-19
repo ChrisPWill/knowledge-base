@@ -10,17 +10,18 @@
     utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        deps = with pkgs; [ bash curl jq coreutils ];
+        goDeps = with pkgs; [ go ];
       in
       {
-        packages.default = pkgs.writeShellApplication {
-          name = "telegram-capture";
-          runtimeInputs = deps;
-          text = builtins.readFile ./scripts/telegram-capture.sh;
+        packages.default = pkgs.buildGoModule {
+          pname = "telegram-capture";
+          version = "0.1.0";
+          src = ./scripts/telegram-capture;
+          vendorHash = null;
         };
 
         devShells.default = pkgs.mkShell {
-          buildInputs = deps;
+          buildInputs = with pkgs; [ go jq curl ];
         };
       }
     );

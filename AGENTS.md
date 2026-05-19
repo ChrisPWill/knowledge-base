@@ -4,7 +4,12 @@
 - The agent's scope is strictly confined to:
     - Configuration files (`.logseq/*.edn`, `.logseq/*.css`).
     - System documentation (`docs/*.md`, `README.md`, `AGENTS.md`).
-    - Scripts (`scripts/*.sh`).
+    - Scripts and source code (`scripts/`, `flake.nix`).
+
+## Testing
+- The `telegram-capture` tool is written in Go.
+- Any changes to the capture logic **MUST** be accompanied by corresponding unit tests in `scripts/telegram-capture/bot_test.go`.
+- Run `nix flake check` to ensure all tests pass before finalizing changes.
 
 ## Strict Prohibitions
 - **NEVER** create or modify files within the following subdirectories (personal or work):
