@@ -82,6 +82,12 @@ func TestProcessMessage(t *testing.T) {
 			expected: "",
 			profile:  "personal",
 		},
+		{
+			name:     "Help command",
+			msg:      "help",
+			expected: "help-sentinel", // Special value to skip file checks
+			profile:  "personal",
+		},
 	}
 
 	for _, tc := range tests {
@@ -107,6 +113,13 @@ func TestProcessMessage(t *testing.T) {
 			}
 
 			if tc.expected == "" {
+				return
+			}
+
+			if tc.expected == "help-sentinel" {
+				if len(mock.sent) != 1 || !strings.Contains(mock.sent[0], "Telegram Capture Help") {
+					t.Errorf("expected help message, got %v", mock.sent)
+				}
 				return
 			}
 

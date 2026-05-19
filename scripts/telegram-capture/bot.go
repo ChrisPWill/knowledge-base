@@ -184,6 +184,25 @@ func (b *Bot) Run(ctx context.Context) error {
 }
 
 func (b *Bot) processMessage(ctx context.Context, update Update) error {
+	msg := strings.TrimSpace(update.Message.Text)
+	if strings.ToLower(msg) == "help" {
+		helpText := "🤖 *Telegram Capture Help*\n\n" +
+			"*Profiles:*\n" +
+			"• `/w [note]` or `/work [note]` - Work journal\n" +
+			"• `/p [note]` or `/personal [note]` - Personal journal\n" +
+			"• `[note]` - Defaults to personal\n\n" +
+			"*Features:*\n" +
+			"• `todo [note]` - Captures as a Logseq TODO\n" +
+			"• Automatic `#inbox` tag added if no tags are present\n\n" +
+			"*Example:*\n" +
+			"`todo Buy milk #shopping`\n" +
+			"`✅ Captured to personal journal: - TODO HH:MM Buy milk #shopping`"
+		if err := b.client.SendMessage(ctx, update.Message.Chat.ID, helpText); err != nil {
+			slog.Warn("Failed to send help message", "error", err)
+		}
+		return nil
+	}
+
 	entry, profile, err := b.handleMessage(ctx, update)
 	if err != nil {
 		errMsg := fmt.Sprintf("❌ Error: %v", err)
