@@ -110,12 +110,14 @@ func (c *httpTelegramClient) SendMessage(ctx context.Context, chatID int64, text
 }
 
 type Bot struct {
-	client          TelegramClient
-	offsetFile      string
-	rootDir         string
-	lastProfile     string
-	lastJournalFile string
-	lastEntryTime   time.Time
+	client              TelegramClient
+	offsetFile          string
+	rootDir             string
+	lastProfile         string
+	lastJournalFile     string
+	lastEntryTime       time.Time
+	isToggledAlso       bool
+	lastInteractionTime time.Time
 }
 
 func NewBot(client TelegramClient, offsetFile string) *Bot {
@@ -188,20 +190,35 @@ func (b *Bot) Run(ctx context.Context) error {
 
 func (b *Bot) processMessage(ctx context.Context, update Update) error {
 	msg := strings.TrimSpace(update.Message.Text)
-	if strings.ToLower(msg) == "help" {
+	lowerMsg := strings.ToLower(msg)
+	now := time.Now()
+
+	if lowerMsg == "help" {
 		helpText := "🤖 *Telegram Capture Help*\n\n" +
 			"*Profiles:*\n" +
 			"• `/w [note]` or `/work [note]` - Work journal\n" +
 			"• `/p [note]` or `/personal [note]` - Personal journal\n" +
 			"• `[note]` - Defaults to personal\n\n" +
+			"*Nesting:* \n" +
+			"• `also [note]` - Nest note under the last entry\n" +
+			"• `toggle also` - Enable auto-nesting mode (5m timeout)\n\n" +
 			"*Features:*\n" +
 			"• `todo [note]` - Captures as a Logseq TODO\n" +
-			"• Automatic `#inbox` tag added if no tags are present\n\n" +
+			"• Automatic `#inbox` tag added if no tags are present (top-level only)\n\n" +
 			"*Example:*\n" +
-			"`todo Buy milk #shopping`\n" +
-			"`✅ Captured to personal journal: - TODO HH:MM Buy milk #shopping`"
+			"`todo Buy milk #shopping`"
 		if err := b.client.SendMessage(ctx, update.Message.Chat.ID, helpText); err != nil {
 			slog.Warn("Failed to send help message", "error", err)
+		}
+		return nil
+	}
+
+	if lowerMsg == "toggle also" {
+		b.isToggledAlso = true
+		b.lastInteractionTime = now
+		confirm := "✅ Also mode enabled. Messages will be nested for 5 minutes of inactivity."
+		if err := b.client.SendMessage(ctx, update.Message.Chat.ID, confirm); err != nil {
+			slog.Warn("Failed to send toggle confirmation", "error", err)
 		}
 		return nil
 	}
@@ -221,7 +238,7 @@ func (b *Bot) processMessage(ctx context.Context, update Update) error {
 
 	slog.Info("Captured message", "profile", profile, "entry", strings.TrimSpace(entry))
 
-	confirmMsg := fmt.Sprintf("✅ Captured to %s journal:\n%s", profile, strings.TrimSpace(entry))
+	confirmMsg := fmt.Sprintf("✅ Captured to %s journal:\n%s", profile, strings.TrimSuffix(entry, "\n"))
 	if err := b.client.SendMessage(ctx, update.Message.Chat.ID, confirmMsg); err != nil {
 		slog.Warn("Failed to send confirmation message", "error", err)
 	}
@@ -233,11 +250,23 @@ func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string,
 	msg := strings.TrimSpace(update.Message.Text)
 	now := time.Now()
 
-	// Check for "also " prefix
+	// Handle toggle timeout
+	if b.isToggledAlso && now.Sub(b.lastInteractionTime) > 5*time.Minute {
+		b.isToggledAlso = false
+	}
+
+	// Check for "also " prefix or toggle mode
 	isAlso := false
 	if strings.HasPrefix(strings.ToLower(msg), "also ") {
 		isAlso = true
 		msg = strings.TrimSpace(msg[len("also "):])
+	} else if b.isToggledAlso {
+		// Only auto-nest if it doesn't have a profile prefix
+		hasPrefix := strings.HasPrefix(msg, "/w ") || strings.HasPrefix(msg, "/work ") ||
+			strings.HasPrefix(msg, "/p ") || strings.HasPrefix(msg, "/personal ")
+		if !hasPrefix {
+			isAlso = true
+		}
 	}
 
 	var profile string
@@ -287,7 +316,8 @@ func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string,
 		cleanMsg = strings.TrimSpace(cleanMsg[len("todo "):])
 	}
 
-	if !tagRegex.MatchString(cleanMsg) {
+	// Only default tag top-level notes
+	if !isAlso && !tagRegex.MatchString(cleanMsg) {
 		cleanMsg = cleanMsg + " #inbox"
 	}
 
@@ -325,6 +355,7 @@ func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string,
 		b.lastJournalFile = journalFile
 	}
 	b.lastEntryTime = now
+	b.lastInteractionTime = now
 
 	return entry, profile, nil
 }

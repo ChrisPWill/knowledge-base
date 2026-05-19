@@ -244,13 +244,81 @@ func TestNesting(t *testing.T) {
 	if !strings.HasPrefix(lines[0], "- ") || !strings.Contains(lines[0], "Parent Note") {
 		t.Errorf("line 0 incorrect: %q", lines[0])
 	}
-	// Line 2: Child 1 (no timestamp)
-	if lines[1] != "  - Child 1 #inbox" {
-		t.Errorf("line 1 incorrect (expected no timestamp): %q", lines[1])
+	// Line 2: Child 1 (no timestamp, NO #inbox)
+	if lines[1] != "  - Child 1" {
+		t.Errorf("line 1 incorrect (expected no timestamp, no inbox): %q", lines[1])
 	}
-	// Line 3: Child 2 (with timestamp)
-	matched, _ := regexp.MatchString(`^  - \d{2}:\d{2} Child 2 #inbox$`, lines[2])
+	// Line 3: Child 2 (with timestamp, NO #inbox)
+	matched, _ := regexp.MatchString(`^  - \d{2}:\d{2} Child 2$`, lines[2])
 	if !matched {
-		t.Errorf("line 2 incorrect (expected timestamp): %q", lines[2])
+		t.Errorf("line 2 incorrect (expected timestamp, no inbox): %q", lines[2])
+	}
+}
+
+func TestToggleAlso(t *testing.T) {
+	caseTmpDir, err := os.MkdirTemp("", "logseq-toggle-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(caseTmpDir)
+
+	mock := &mockTelegramClient{}
+	bot := NewBot(mock, filepath.Join(caseTmpDir, ".offset"))
+	bot.rootDir = caseTmpDir
+	ctx := context.Background()
+
+	// 1. Send parent
+	bot.processMessage(ctx, Update{Message: struct {
+		Text string `json:"text"`
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+	}{Text: "Parent", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+
+	// 2. Enable toggle
+	bot.processMessage(ctx, Update{Message: struct {
+		Text string `json:"text"`
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+	}{Text: "toggle also", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+
+	// 3. Send message (should auto-nest, no #inbox)
+	bot.processMessage(ctx, Update{Message: struct {
+		Text string `json:"text"`
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+	}{Text: "Auto Nested", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+
+	// 4. Force timeout
+	bot.lastInteractionTime = bot.lastInteractionTime.Add(-6 * time.Minute)
+
+	// 5. Send message (should be top-level, with #inbox)
+	bot.processMessage(ctx, Update{Message: struct {
+		Text string `json:"text"`
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+	}{Text: "Top Level Again", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+
+	// Verify file content
+	now := time.Now().Format("2006_01_02")
+	path := filepath.Join(caseTmpDir, "personal", "journals", now+".md")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("could not read journal file: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %v", len(lines), lines)
+	}
+
+	if !strings.Contains(lines[1], "Auto Nested") || strings.Contains(lines[1], "#inbox") || !strings.HasPrefix(lines[1], "  - ") {
+		t.Errorf("line 1 incorrect (should be nested, no inbox): %q", lines[1])
+	}
+	if !strings.Contains(lines[2], "Top Level Again #inbox") || !strings.HasPrefix(lines[2], "- ") {
+		t.Errorf("line 2 incorrect (should be top-level, with inbox): %q", lines[2])
 	}
 }
