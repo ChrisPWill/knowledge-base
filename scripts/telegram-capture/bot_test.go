@@ -338,6 +338,30 @@ func TestToggleAlso(t *testing.T) {
 		} `json:"chat"`
 	}{Text: "Top Level Again", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
 
+	// 6. Enable toggle again
+	bot.processMessage(ctx, Update{Message: struct {
+		Text string `json:"text"`
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+	}{Text: "toggle also", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+
+	// 7. Disable toggle immediately
+	bot.processMessage(ctx, Update{Message: struct {
+		Text string `json:"text"`
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+	}{Text: "toggle also", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+
+	// 8. Send message (should be top-level)
+	bot.processMessage(ctx, Update{Message: struct {
+		Text string `json:"text"`
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+	}{Text: "Disabled Manually", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}})
+
 	// Verify file content
 	now := time.Now().Format("2006_01_02")
 	path := filepath.Join(caseTmpDir, "personal", "journals", now+".md")
@@ -347,8 +371,8 @@ func TestToggleAlso(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("expected 3 lines, got %d: %v", len(lines), lines)
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %v", len(lines), lines)
 	}
 
 	if !strings.Contains(lines[1], "Auto Nested") || strings.Contains(lines[1], "#inbox") || !strings.HasPrefix(lines[1], "  - ") {
@@ -356,5 +380,8 @@ func TestToggleAlso(t *testing.T) {
 	}
 	if !strings.Contains(lines[2], "Top Level Again #inbox") || !strings.HasPrefix(lines[2], "- ") {
 		t.Errorf("line 2 incorrect (should be top-level, with inbox): %q", lines[2])
+	}
+	if !strings.Contains(lines[3], "Disabled Manually #inbox") || !strings.HasPrefix(lines[3], "- ") {
+		t.Errorf("line 3 incorrect (should be top-level after manual disable): %q", lines[3])
 	}
 }

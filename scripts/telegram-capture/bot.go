@@ -214,9 +214,14 @@ func (b *Bot) processMessage(ctx context.Context, update Update) error {
 	}
 
 	if lowerMsg == "toggle also" {
-		b.isToggledAlso = true
+		b.isToggledAlso = !b.isToggledAlso
 		b.lastInteractionTime = now
-		confirm := "✅ Also mode enabled. Messages will be nested for 5 minutes of inactivity."
+		var confirm string
+		if b.isToggledAlso {
+			confirm = "✅ Also mode enabled. Messages will be nested for 5 minutes of inactivity."
+		} else {
+			confirm = "❌ Also mode disabled."
+		}
 		if err := b.client.SendMessage(ctx, update.Message.Chat.ID, confirm); err != nil {
 			slog.Warn("Failed to send toggle confirmation", "error", err)
 		}
