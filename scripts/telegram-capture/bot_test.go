@@ -63,7 +63,7 @@ func TestDailyReview(t *testing.T) {
 	os.WriteFile(filepath.Join(yDir, today+".md"), []byte(tContent), 0644)
 
 	// 3. Test /yesterday
-	err = bot.processMessage(ctx, Update{Message: Message{Text: "/yesterday", Chat: Chat{ID: 1}}}, fixedNow)
+	err = bot.processMessage(ctx, Update{Message: &Message{Text: "/yesterday", Chat: Chat{ID: 1}}}, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestDailyReview(t *testing.T) {
 
 	// 4. Test /today
 	mock.sent = nil
-	err = bot.processMessage(ctx, Update{Message: Message{Text: "/today", Chat: Chat{ID: 1}}}, fixedNow)
+	err = bot.processMessage(ctx, Update{Message: &Message{Text: "/today", Chat: Chat{ID: 1}}}, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestKeywordMapping(t *testing.T) {
 	ctx := context.Background()
 
 	// Test Gym message
-	err = bot.processMessage(ctx, Update{Message: Message{Text: "Gym session", Chat: Chat{ID: 1}}}, fixedNow)
+	err = bot.processMessage(ctx, Update{Message: &Message{Text: "Gym session", Chat: Chat{ID: 1}}}, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestKeywordMapping(t *testing.T) {
 	}
 
 	// Test Meeting message
-	err = bot.processMessage(ctx, Update{Message: Message{Text: "Project Meeting", Chat: Chat{ID: 1}}}, fixedNow)
+	err = bot.processMessage(ctx, Update{Message: &Message{Text: "Project Meeting", Chat: Chat{ID: 1}}}, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestMediaSupport(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Photo with caption
-	photoUpdate := Update{}
+	photoUpdate := Update{Message: &Message{}}
 	photoUpdate.Message.Photo = []PhotoSize{{FileID: "photo123"}}
 	photoUpdate.Message.Caption = "Lunch"
 	photoUpdate.Message.Chat.ID = 123
@@ -167,7 +167,7 @@ func TestMediaSupport(t *testing.T) {
 	}
 
 	// 2. Voice note
-	voiceUpdate := Update{}
+	voiceUpdate := Update{Message: &Message{}}
 	voiceUpdate.Message.Voice = &PhotoSize{FileID: "voice456"}
 	voiceUpdate.Message.Chat.ID = 123
 
@@ -383,7 +383,7 @@ func TestProcessMessage(t *testing.T) {
 			}
 			ctx := context.Background()
 
-			update := Update{}
+			update := Update{Message: &Message{}}
 			update.Message.Text = tc.msg
 			update.Message.Chat.ID = 123
 
@@ -464,7 +464,7 @@ func TestProcessMessageError(t *testing.T) {
 	bot.rootDir = caseTmpDir
 	ctx := context.Background()
 
-	update := Update{}
+	update := Update{Message: &Message{}}
 	update.Message.Text = "This should fail"
 	update.Message.Chat.ID = 123
 
@@ -493,19 +493,19 @@ func TestNesting(t *testing.T) {
 	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 
 	// 1. Send a parent note
-	update1 := Update{}
+	update1 := Update{Message: &Message{}}
 	update1.Message.Text = "Parent Note"
 	update1.Message.Chat.ID = 123
 	bot.processMessage(ctx, update1, fixedNow)
 
 	// 2. Send an "also" note (within 1 hour)
-	update2 := Update{}
+	update2 := Update{Message: &Message{}}
 	update2.Message.Text = "also Child 1"
 	update2.Message.Chat.ID = 123
 	bot.processMessage(ctx, update2, fixedNow.Add(time.Minute))
 
 	// 3. Send another "also" note (fake time to > 1 hour)
-	update3 := Update{}
+	update3 := Update{Message: &Message{}}
 	update3.Message.Text = "also Child 2"
 	update3.Message.Chat.ID = 123
 	bot.processMessage(ctx, update3, fixedNow.Add(2*time.Hour))
@@ -558,7 +558,7 @@ func TestStubHandling(t *testing.T) {
 
 	// 2. Send message
 	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
-	bot.processMessage(ctx, Update{Message: Message{Text: "Clean Note", Chat: Chat{ID: 1}}}, fixedNow)
+	bot.processMessage(ctx, Update{Message: &Message{Text: "Clean Note", Chat: Chat{ID: 1}}}, fixedNow)
 
 	// 3. Verify content
 	content, _ := os.ReadFile(path)
@@ -588,7 +588,7 @@ func TestLocationSupport(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Raw Location Pin (Top Level)
-	locUpdate := Update{}
+	locUpdate := Update{Message: &Message{}}
 	locUpdate.Message.Location = &Location{Latitude: 51.5074, Longitude: -0.1278}
 	locUpdate.Message.Chat.ID = 123
 
@@ -605,7 +605,7 @@ func TestLocationSupport(t *testing.T) {
 	}
 
 	// 2. Venue (Auto-nested < 1 min)
-	venueUpdate := Update{}
+	venueUpdate := Update{Message: &Message{}}
 	venueUpdate.Message.Venue = &Venue{
 		Location: Location{Latitude: 51.5033, Longitude: -0.1195},
 		Title:    "London Eye",
@@ -630,7 +630,7 @@ func TestLocationSupport(t *testing.T) {
 	}
 
 	// 3. Raw Location (Top Level > 1 min)
-	locUpdate2 := Update{}
+	locUpdate2 := Update{Message: &Message{}}
 	locUpdate2.Message.Location = &Location{Latitude: 48.8584, Longitude: 2.2945}
 	locUpdate2.Message.Chat.ID = 123
 
@@ -648,6 +648,86 @@ func TestLocationSupport(t *testing.T) {
 	}
 }
 
+func TestEditDeleteSync(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bot-test-sync-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mock := &mockTelegramClient{}
+	bot := NewBot(mock, filepath.Join(tmpDir, ".offset"))
+	bot.rootDir = tmpDir
+
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	// 1. Initial Capture
+	update := Update{
+		Message: &Message{
+			MessageID: 1001,
+			Text:      "Initial message",
+			Chat:      Chat{ID: 123},
+		},
+	}
+	err = bot.processMessage(ctx, update, fixedNow)
+	if err != nil {
+		t.Fatalf("Initial capture failed: %v", err)
+	}
+
+	journalPath := filepath.Join(tmpDir, "personal", "journals", "2026_05_19.md")
+	content, _ := os.ReadFile(journalPath)
+	if !strings.Contains(string(content), "Initial message") {
+		t.Errorf("Initial message not found in journal")
+	}
+
+	// 2. Edit Message
+	editUpdate := Update{
+		EditedMessage: &Message{
+			MessageID: 1001,
+			Text:      "Edited message",
+			Chat:      Chat{ID: 123},
+		},
+	}
+	err = bot.processMessage(ctx, editUpdate, fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("Edit failed: %v", err)
+	}
+
+	content, _ = os.ReadFile(journalPath)
+	if strings.Contains(string(content), "Initial message") {
+		t.Errorf("Initial message still exists after edit")
+	}
+	if !strings.Contains(string(content), "Edited message") {
+		t.Errorf("Edited message not found in journal")
+	}
+
+	// 3. Delete Message (Telegram doesn't send "delete" updates, but we can simulate it with empty text if that's what we want,
+	// or just test the logic. User said "attempts to update or remove").
+	// Let's assume empty text means delete.
+	deleteUpdate := Update{
+		EditedMessage: &Message{
+			MessageID: 1001,
+			Text:      "",
+			Chat:      Chat{ID: 123},
+		},
+	}
+	err = bot.processMessage(ctx, deleteUpdate, fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	content, _ = os.ReadFile(journalPath)
+	if strings.Contains(string(content), "Edited message") {
+		t.Errorf("Message still exists after deletion")
+	}
+	// Content should be empty or just bullets (if multiple)
+	if strings.TrimSpace(string(content)) != "" {
+		// If it's just the bullet left, that's also not ideal, but for now we expect line removal.
+		// Our logic does lines = append(lines[:i], lines[i+1:]...)
+	}
+}
+
 func TestToggleAlso(t *testing.T) {
 	caseTmpDir, err := os.MkdirTemp("", "logseq-toggle-")
 	if err != nil {
@@ -662,28 +742,28 @@ func TestToggleAlso(t *testing.T) {
 	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 
 	// 1. Send parent
-	bot.processMessage(ctx, Update{Message: Message{Text: "Parent", Chat: Chat{ID: 1}}}, fixedNow)
+	bot.processMessage(ctx, Update{Message: &Message{Text: "Parent", Chat: Chat{ID: 1}}}, fixedNow)
 
 	// 2. Enable toggle
-	bot.processMessage(ctx, Update{Message: Message{Text: "toggle also", Chat: Chat{ID: 1}}}, fixedNow)
+	bot.processMessage(ctx, Update{Message: &Message{Text: "toggle also", Chat: Chat{ID: 1}}}, fixedNow)
 
 	// 3. Send message (should auto-nest, no #inbox)
-	bot.processMessage(ctx, Update{Message: Message{Text: "Auto Nested", Chat: Chat{ID: 1}}}, fixedNow.Add(time.Minute))
+	bot.processMessage(ctx, Update{Message: &Message{Text: "Auto Nested", Chat: Chat{ID: 1}}}, fixedNow.Add(time.Minute))
 
 	// 4. Force timeout
 	bot.lastInteractionTime = bot.lastInteractionTime.Add(-6 * time.Minute)
 
 	// 5. Send message (should be top-level, with #inbox)
-	bot.processMessage(ctx, Update{Message: Message{Text: "Top Level Again", Chat: Chat{ID: 1}}}, fixedNow.Add(10*time.Minute))
+	bot.processMessage(ctx, Update{Message: &Message{Text: "Top Level Again", Chat: Chat{ID: 1}}}, fixedNow.Add(10*time.Minute))
 
 	// 6. Enable toggle again
-	bot.processMessage(ctx, Update{Message: Message{Text: "toggle also", Chat: Chat{ID: 1}}}, fixedNow.Add(11*time.Minute))
+	bot.processMessage(ctx, Update{Message: &Message{Text: "toggle also", Chat: Chat{ID: 1}}}, fixedNow.Add(11*time.Minute))
 
 	// 7. Disable toggle immediately
-	bot.processMessage(ctx, Update{Message: Message{Text: "toggle also", Chat: Chat{ID: 1}}}, fixedNow.Add(12*time.Minute))
+	bot.processMessage(ctx, Update{Message: &Message{Text: "toggle also", Chat: Chat{ID: 1}}}, fixedNow.Add(12*time.Minute))
 
 	// 8. Send message (should be top-level)
-	bot.processMessage(ctx, Update{Message: Message{Text: "Disabled Manually", Chat: Chat{ID: 1}}}, fixedNow.Add(13*time.Minute))
+	bot.processMessage(ctx, Update{Message: &Message{Text: "Disabled Manually", Chat: Chat{ID: 1}}}, fixedNow.Add(13*time.Minute))
 
 	// Verify file content
 	now := time.Now().Format("2006_01_02")

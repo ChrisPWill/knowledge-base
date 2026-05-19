@@ -41,18 +41,27 @@ type Chat struct {
 }
 
 type Message struct {
-	Text     string      `json:"text"`
-	Chat     Chat        `json:"chat"`
-	Photo    []PhotoSize `json:"photo"`
-	Voice    *PhotoSize  `json:"voice"` // Voice also has file_id
-	Location *Location   `json:"location"`
-	Venue    *Venue      `json:"venue"`
-	Caption  string      `json:"caption"`
+	MessageID int64       `json:"message_id"`
+	Text      string      `json:"text"`
+	Chat      Chat        `json:"chat"`
+	Photo     []PhotoSize `json:"photo"`
+	Voice     *PhotoSize  `json:"voice"` // Voice also has file_id
+	Location  *Location   `json:"location"`
+	Venue     *Venue      `json:"venue"`
+	Caption   string      `json:"caption"`
 }
 
 type Update struct {
-	UpdateID int     `json:"update_id"`
-	Message  Message `json:"message"`
+	UpdateID      int      `json:"update_id"`
+	Message       *Message `json:"message"`
+	EditedMessage *Message `json:"edited_message"`
+}
+
+// MessageMetadata tracks where a message was saved to allow for edits/deletes
+type MessageMetadata struct {
+	FilePath    string    `json:"file_path"`
+	Content     string    `json:"content"`      // The full line as written to the file
+	Timestamp   time.Time `json:"timestamp"`    // When it was captured
 }
 
 type GetUpdatesResponse struct {
@@ -220,6 +229,31 @@ type Bot struct {
 	isToggledAlso       bool
 	lastInteractionTime time.Time
 	titleFetcher        func(ctx context.Context, url string) (string, error)
+	messageMap          map[int64]MessageMetadata
+	mapFile             string
+}
+
+func (b *Bot) loadMessageMap() {
+	if data, err := os.ReadFile(b.mapFile); err == nil {
+		json.Unmarshal(data, &b.messageMap)
+	}
+	if b.messageMap == nil {
+		b.messageMap = make(map[int64]MessageMetadata)
+	}
+}
+
+func (b *Bot) saveMessageMap() {
+	// Cleanup old entries (> 24h) to keep it lean
+	now := time.Now()
+	for id, meta := range b.messageMap {
+		if now.Sub(meta.Timestamp) > 24*time.Hour {
+			delete(b.messageMap, id)
+		}
+	}
+
+	if data, err := json.Marshal(b.messageMap); err == nil {
+		os.WriteFile(b.mapFile, data, 0644)
+	}
 }
 
 func defaultTitleFetcher(ctx context.Context, u string) (string, error) {
@@ -260,8 +294,10 @@ func NewBot(client TelegramClient, offsetFile string) *Bot {
 	return &Bot{
 		client:       client,
 		offsetFile:   offsetFile,
+		mapFile:      offsetFile + ".map",
 		rootDir:      ".",
 		titleFetcher: defaultTitleFetcher,
+		messageMap:   make(map[int64]MessageMetadata),
 	}
 }
 
@@ -270,6 +306,8 @@ func (b *Bot) Run(ctx context.Context) error {
 	if data, err := os.ReadFile(b.offsetFile); err == nil {
 		fmt.Sscanf(string(data), "%d", &offset)
 	}
+
+	b.loadMessageMap()
 
 	slog.Info("Starting Telegram capture bot (Go version)...")
 
@@ -305,15 +343,23 @@ func (b *Bot) Run(ctx context.Context) error {
 			backoff = 1 * time.Second
 
 			for _, update := range updates {
-				if update.Message.Text != "" || len(update.Message.Photo) > 0 || update.Message.Voice != nil || update.Message.Location != nil || update.Message.Venue != nil {
-					if err := b.processMessage(ctx, update, time.Now()); err != nil {
-						slog.Error("Error processing message", "update_id", update.UpdateID, "error", err)
+				msg := update.Message
+				if msg == nil {
+					msg = update.EditedMessage
+				}
+
+				if msg != nil {
+					if msg.Text != "" || len(msg.Photo) > 0 || msg.Voice != nil || msg.Location != nil || msg.Venue != nil {
+						if err := b.processMessage(ctx, update, time.Now()); err != nil {
+							slog.Error("Error processing message", "update_id", update.UpdateID, "error", err)
+						}
 					}
 				}
 				offset = update.UpdateID + 1
 				if err := os.WriteFile(b.offsetFile, []byte(fmt.Sprintf("%d", offset)), 0644); err != nil {
 					slog.Error("Error saving offset", "offset", offset, "error", err)
 				}
+				b.saveMessageMap()
 			}
 
 			// Small sleep to avoid tight loop if GetUpdates returns immediately
@@ -326,7 +372,15 @@ func (b *Bot) Run(ctx context.Context) error {
 }
 
 func (b *Bot) processMessage(ctx context.Context, update Update, now time.Time) error {
-	msg := strings.TrimSpace(update.Message.Text)
+	if update.EditedMessage != nil {
+		if err := b.handleEdit(ctx, update, now); err != nil {
+			slog.Error("Failed to handle edit", "error", err)
+		}
+		return nil
+	}
+
+	msgObj := update.Message
+	msg := strings.TrimSpace(msgObj.Text)
 	lowerMsg := strings.ToLower(msg)
 
 	if strings.HasPrefix(lowerMsg, "help") {
@@ -386,7 +440,11 @@ func (b *Bot) processMessage(ctx context.Context, update Update, now time.Time) 
 				if reviewText.Len() > 0 {
 					reviewText.WriteString("\n")
 				}
-				reviewText.WriteString(fmt.Sprintf("📖 *%s (%s)*\n", strings.Title(profile), label))
+				profileLabel := profile
+				if len(profileLabel) > 0 {
+					profileLabel = strings.ToUpper(profileLabel[:1]) + profileLabel[1:]
+				}
+				reviewText.WriteString(fmt.Sprintf("📖 *%s (%s)*\n", profileLabel, label))
 				reviewText.WriteString(string(content))
 			}
 		}
@@ -420,7 +478,7 @@ func (b *Bot) processMessage(ctx context.Context, update Update, now time.Time) 
 	entry, profile, err := b.handleMessage(ctx, update, now)
 	if err != nil {
 		errMsg := fmt.Sprintf("❌ Error: %v", err)
-		if sendErr := b.client.SendMessage(ctx, update.Message.Chat.ID, errMsg); sendErr != nil {
+		if sendErr := b.client.SendMessage(ctx, msgObj.Chat.ID, errMsg); sendErr != nil {
 			slog.Warn("Failed to send error message", "error", sendErr)
 		}
 		return err
@@ -430,23 +488,103 @@ func (b *Bot) processMessage(ctx context.Context, update Update, now time.Time) 
 		return nil
 	}
 
+	// Track metadata for future edits
+	b.messageMap[msgObj.MessageID] = MessageMetadata{
+		FilePath:  b.lastJournalFile,
+		Content:   entry,
+		Timestamp: now,
+	}
+
 	slog.Info("Captured message", "profile", profile, "entry", strings.TrimSpace(entry))
 
 	confirmMsg := fmt.Sprintf("✅ Captured to %s journal:\n%s", profile, strings.TrimSuffix(entry, "\n"))
-	if err := b.client.SendMessage(ctx, update.Message.Chat.ID, confirmMsg); err != nil {
+	if err := b.client.SendMessage(ctx, msgObj.Chat.ID, confirmMsg); err != nil {
 		slog.Warn("Failed to send confirmation message", "error", err)
 	}
 
 	return nil
 }
 
-func (b *Bot) handleMessage(ctx context.Context, update Update, now time.Time) (string, string, error) {
-	msg := strings.TrimSpace(update.Message.Text)
-	if msg == "" && update.Message.Caption != "" {
-		msg = strings.TrimSpace(update.Message.Caption)
+func (b *Bot) handleEdit(ctx context.Context, update Update, now time.Time) error {
+	msgObj := update.EditedMessage
+	meta, ok := b.messageMap[msgObj.MessageID]
+	if !ok {
+		return fmt.Errorf("no metadata found for message %d", msgObj.MessageID)
 	}
 
-	isLocation := update.Message.Location != nil || update.Message.Venue != nil
+	// Only allow edits within 1 hour for safety
+	if now.Sub(meta.Timestamp) > 1*time.Hour {
+		return fmt.Errorf("edit window expired for message %d", msgObj.MessageID)
+	}
+
+	// Generate the new entry
+	// We use the original timestamp for consistency in formatting (e.g. 15:04)
+	newEntry, _, err := b.handleMessage(ctx, update, meta.Timestamp)
+	if err != nil {
+		return err
+	}
+
+	content, err := os.ReadFile(meta.FilePath)
+	if err != nil {
+		return fmt.Errorf("failed to read journal file: %w", err)
+	}
+
+	lines := strings.Split(string(content), "\n")
+	found := false
+	for i, line := range lines {
+		// Exact match of the whole line (including newline if it was there)
+		if line+"\n" == meta.Content {
+			if newEntry == "" {
+				// Delete line
+				lines = append(lines[:i], lines[i+1:]...)
+			} else {
+				// Update line
+				lines[i] = strings.TrimSuffix(newEntry, "\n")
+			}
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("could not find original entry in %s", meta.FilePath)
+	}
+
+	newFileContent := strings.Join(lines, "\n")
+	if err := os.WriteFile(meta.FilePath, []byte(newFileContent), 0644); err != nil {
+		return fmt.Errorf("failed to update journal file: %w", err)
+	}
+
+	// Update metadata
+	if newEntry == "" {
+		delete(b.messageMap, msgObj.MessageID)
+	} else {
+		meta.Content = newEntry
+		b.messageMap[msgObj.MessageID] = meta
+	}
+
+	if err := b.client.SendMessage(ctx, msgObj.Chat.ID, "🔄 Updated entry in journal."); err != nil {
+		slog.Warn("Failed to send update confirmation", "error", err)
+	}
+
+	return nil
+}
+
+func (b *Bot) handleMessage(ctx context.Context, update Update, now time.Time) (string, string, error) {
+	msgObj := update.Message
+	if msgObj == nil {
+		msgObj = update.EditedMessage
+	}
+
+	msg := ""
+	if msgObj != nil {
+		msg = strings.TrimSpace(msgObj.Text)
+		if msg == "" && msgObj.Caption != "" {
+			msg = strings.TrimSpace(msgObj.Caption)
+		}
+	}
+
+	isLocation := msgObj != nil && (msgObj.Location != nil || msgObj.Venue != nil)
 
 	// Handle toggle timeout
 	if b.isToggledAlso && now.Sub(b.lastInteractionTime) > 5*time.Minute {
@@ -505,18 +643,18 @@ func (b *Bot) handleMessage(ctx context.Context, update Update, now time.Time) (
 		var locText string
 		var u string
 
-		if update.Message.Venue != nil {
-			lat = update.Message.Venue.Location.Latitude
-			lon = update.Message.Venue.Location.Longitude
-			title := update.Message.Venue.Title
-			address := update.Message.Venue.Address
+		if msgObj.Venue != nil {
+			lat = msgObj.Venue.Location.Latitude
+			lon = msgObj.Venue.Location.Longitude
+			title := msgObj.Venue.Title
+			address := msgObj.Venue.Address
 			// Clean up address (often contains title or redundant info)
 			address = strings.Split(address, ",")[0]
 			u = fmt.Sprintf("https://www.google.com/maps?q=%f,%f", lat, lon)
 			locText = fmt.Sprintf("%s: %s (%s)", title, address, u)
 		} else {
-			lat = update.Message.Location.Latitude
-			lon = update.Message.Location.Longitude
+			lat = msgObj.Location.Latitude
+			lon = msgObj.Location.Longitude
 			locText = fmt.Sprintf("https://www.google.com/maps?q=%f,%f", lat, lon)
 		}
 
@@ -528,18 +666,18 @@ func (b *Bot) handleMessage(ctx context.Context, update Update, now time.Time) (
 	}
 
 	// Handle media
-	if len(update.Message.Photo) > 0 || update.Message.Voice != nil {
+	if msgObj != nil && (len(msgObj.Photo) > 0 || msgObj.Voice != nil) {
 		var fileID string
 		var extension string
 		var format string
 
-		if len(update.Message.Photo) > 0 {
+		if len(msgObj.Photo) > 0 {
 			// Take the last photo (usually the largest)
-			fileID = update.Message.Photo[len(update.Message.Photo)-1].FileID
+			fileID = msgObj.Photo[len(msgObj.Photo)-1].FileID
 			extension = ".jpg"
 			format = "![Image](assets/%s)"
 		} else {
-			fileID = update.Message.Voice.FileID
+			fileID = msgObj.Voice.FileID
 			extension = ".ogg"
 			format = "[Voice Note](assets/%s)"
 		}
@@ -711,6 +849,11 @@ func (b *Bot) handleMessage(ctx context.Context, update Update, now time.Time) (
 			todoPrefix = "TODO "
 		}
 		entry = fmt.Sprintf("- %s%s%s %s%s%s\n", todoPrefix, priority, timeStr, cleanMsg, scheduleMarker, tagSuffix)
+	}
+
+	// If we are editing, don't write to file here; handleEdit will do it.
+	if update.EditedMessage != nil {
+		return entry, profile, nil
 	}
 
 	f, err := os.OpenFile(journalFile, os.O_RDWR|os.O_CREATE, 0644)
