@@ -345,11 +345,46 @@ func (b *Bot) processMessage(ctx context.Context, update Update, now time.Time) 
 				"• `/w [note]` or `/work [note]` - Work journal\n" +
 				"• `/p [note]` or `/personal [note]` - Personal journal\n" +
 				"• `[note]` - Defaults to personal\n\n" +
+				"*Review:* `/today`, `/yesterday`\n" +
 				"*Topics:* `help nesting`, `help priority`, `help scheduling`, `help media`"
 		}
 
 		if err := b.client.SendMessage(ctx, update.Message.Chat.ID, helpText); err != nil {
 			slog.Warn("Failed to send help message", "error", err)
+		}
+		return nil
+	}
+
+	if lowerMsg == "/today" || lowerMsg == "/yesterday" {
+		targetDate := now
+		label := "today"
+		if lowerMsg == "/yesterday" {
+			targetDate = now.AddDate(0, 0, -1)
+			label = "yesterday"
+		}
+
+		// Check both profiles
+		var reviewText strings.Builder
+		for _, profile := range []string{"personal", "work"} {
+			dateStr := targetDate.Format("2006_01_02")
+			journalFile := filepath.Join(b.rootDir, profile, "journals", dateStr+".md")
+
+			if content, err := os.ReadFile(journalFile); err == nil {
+				if reviewText.Len() > 0 {
+					reviewText.WriteString("\n")
+				}
+				reviewText.WriteString(fmt.Sprintf("📖 *%s (%s)*\n", strings.Title(profile), label))
+				reviewText.WriteString(string(content))
+			}
+		}
+
+		responseText := reviewText.String()
+		if responseText == "" {
+			responseText = fmt.Sprintf("📭 No entries found for %s.", label)
+		}
+
+		if err := b.client.SendMessage(ctx, update.Message.Chat.ID, responseText); err != nil {
+			slog.Warn("Failed to send review message", "error", err)
 		}
 		return nil
 	}
@@ -456,7 +491,7 @@ func (b *Bot) handleMessage(ctx context.Context, update Update, now time.Time) (
 			// Take the last photo (usually the largest)
 			fileID = update.Message.Photo[len(update.Message.Photo)-1].FileID
 			extension = ".jpg"
-			format = "![[assets/%s]]"
+			format = "![Image](assets/%s)"
 		} else {
 			fileID = update.Message.Voice.FileID
 			extension = ".ogg"
@@ -525,23 +560,47 @@ func (b *Bot) handleMessage(ctx context.Context, update Update, now time.Time) (
 
 	// Natural Language Scheduling
 	var scheduleMarker string
-	for _, trigger := range []struct {
+	triggers := []struct {
 		prefix string
 		marker string
 	}{
 		{"scheduled for ", "SCHEDULED"},
 		{"deadline ", "DEADLINE"},
-	} {
+	}
+
+	// If it's a TODO, assume certain words imply a deadline
+	if isTodo {
+		for _, word := range []string{"today", "tomorrow", "next "} {
+			triggers = append(triggers, struct {
+				prefix string
+				marker string
+			}{word, "DEADLINE"})
+		}
+	}
+
+	for _, trigger := range triggers {
 		lower := strings.ToLower(cleanMsg)
 		idx := strings.Index(lower, trigger.prefix)
 		if idx != -1 {
 			dateStr := cleanMsg[idx+len(trigger.prefix):]
+			// Special case for triggers that are the whole word (today, tomorrow)
+			// we want to parse the trigger word itself.
+			if trigger.prefix == "today" || trigger.prefix == "tomorrow" {
+				dateStr = trigger.prefix
+			}
+
 			parsedDate, err := naturaldate.Parse(dateStr, now)
 			if err == nil {
+				// Adjustment for "next " to ensure it's in the future
+				if trigger.prefix == "next " && parsedDate.Before(now) {
+					parsedDate = parsedDate.AddDate(0, 0, 7)
+				}
+
 				scheduleMarker = fmt.Sprintf(" %s: <%s %s>",
 					trigger.marker,
 					parsedDate.Format("2006-01-02"),
 					parsedDate.Format("Mon"))
+
 				cleanMsg = strings.TrimSpace(cleanMsg[:idx])
 				break
 			}

@@ -36,6 +36,52 @@ func (m *mockTelegramClient) DownloadFile(ctx context.Context, filePath string, 
 	return os.WriteFile(destPath, []byte("mock content"), 0644)
 }
 
+func TestDailyReview(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bot-test-review-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mock := &mockTelegramClient{}
+	bot := NewBot(mock, filepath.Join(tmpDir, ".offset"))
+	bot.rootDir = tmpDir
+
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	// 1. Setup yesterday's journal
+	yesterday := fixedNow.AddDate(0, 0, -1).Format("2006_01_02")
+	yDir := filepath.Join(tmpDir, "personal", "journals")
+	os.MkdirAll(yDir, 0755)
+	yContent := "- 10:00 Yesterday's task #inbox\n- 11:00 Another thing\n"
+	os.WriteFile(filepath.Join(yDir, yesterday+".md"), []byte(yContent), 0644)
+
+	// 2. Setup today's journal
+	today := fixedNow.Format("2006_01_02")
+	tContent := "- 09:00 Morning routine\n- 12:00 lunch\n"
+	os.WriteFile(filepath.Join(yDir, today+".md"), []byte(tContent), 0644)
+
+	// 3. Test /yesterday
+	err = bot.processMessage(ctx, Update{Message: Message{Text: "/yesterday", Chat: Chat{ID: 1}}}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mock.sent) < 1 || !strings.Contains(mock.sent[0], "Yesterday's task") {
+		t.Errorf("expected yesterday's entries, got: %v", mock.sent)
+	}
+
+	// 4. Test /today
+	mock.sent = nil
+	err = bot.processMessage(ctx, Update{Message: Message{Text: "/today", Chat: Chat{ID: 1}}}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mock.sent) < 1 || !strings.Contains(mock.sent[0], "Morning routine") {
+		t.Errorf("expected today's entries, got: %v", mock.sent)
+	}
+}
+
 func TestMediaSupport(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "bot-test-media-*")
 	if err != nil {
@@ -67,7 +113,7 @@ func TestMediaSupport(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expectedEntry := "- 12:00 ![[assets/capture_20260519_120000.jpg]] Lunch #inbox\n"
+	expectedEntry := "- 12:00 ![Image](assets/capture_20260519_120000.jpg) Lunch #inbox\n"
 	if string(content) != expectedEntry {
 		t.Errorf("expected %q, got %q", expectedEntry, string(content))
 	}
@@ -169,6 +215,18 @@ func TestProcessMessage(t *testing.T) {
 			profile:  "personal",
 		},
 		{
+			name:     "Today review empty",
+			msg:      "/today",
+			expected: "sentinel:No entries found for today",
+			profile:  "personal",
+		},
+		{
+			name:     "Yesterday review empty",
+			msg:      "/yesterday",
+			expected: "sentinel:No entries found for yesterday",
+			profile:  "personal",
+		},
+		{
 			name:           "Priority A",
 			msg:            "A critical bug",
 			expected:       "[#A]",
@@ -209,6 +267,41 @@ func TestProcessMessage(t *testing.T) {
 			expected:       "DEADLINE: <2026-05-22 Fri>",
 			profile:        "personal",
 			expectedFormat: `^- TODO 12:00 submit report DEADLINE: <2026-05-22 Fri> #inbox\n$`,
+		},
+		{
+			name:           "Implicit Deadline next Friday",
+			msg:            "todo submit report next friday",
+			expected:       "DEADLINE: <2026-05-22 Fri>",
+			profile:        "personal",
+			expectedFormat: `^- TODO 12:00 submit report DEADLINE: <2026-05-22 Fri> #inbox\n$`,
+		},
+		{
+			name:           "No Implicit Deadline for non-todo",
+			msg:            "Meeting next friday",
+			expected:       "Meeting next friday",
+			profile:        "personal",
+			expectedFormat: `^- 12:00 Meeting next friday #inbox\n$`,
+		},
+		{
+			name:           "Implicit Deadline tomorrow",
+			msg:            "todo Buy milk tomorrow",
+			expected:       "DEADLINE: <2026-05-20 Wed>",
+			profile:        "personal",
+			expectedFormat: `^- TODO 12:00 Buy milk DEADLINE: <2026-05-20 Wed> #inbox\n$`,
+		},
+		{
+			name:           "Implicit Deadline today",
+			msg:            "todo submit report today",
+			expected:       "DEADLINE: <2026-05-19 Tue>",
+			profile:        "personal",
+			expectedFormat: `^- TODO 12:00 submit report DEADLINE: <2026-05-19 Tue> #inbox\n$`,
+		},
+		{
+			name:           "No Implicit Deadline for non-todo today",
+			msg:            "Meeting today",
+			expected:       "Meeting today",
+			profile:        "personal",
+			expectedFormat: `^- 12:00 Meeting today #inbox\n$`,
 		},
 	}
 
