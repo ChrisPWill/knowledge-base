@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -108,6 +109,13 @@ func TestProcessMessage(t *testing.T) {
 			profile:        "work",
 			expectedFormat: `^- TODO \[#C\] \d{2}:\d{2} minor task #inbox\n$`,
 		},
+		{
+			name:           "URL with Title",
+			msg:            "Check https://example.com",
+			expected:       "Check [Example](https://example.com)",
+			profile:        "personal",
+			expectedFormat: `^- \d{2}:\d{2} Check \[Example\]\(https://example.com\) #inbox\n$`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -121,6 +129,12 @@ func TestProcessMessage(t *testing.T) {
 			mock := &mockTelegramClient{}
 			bot := NewBot(mock, filepath.Join(caseTmpDir, ".offset"))
 			bot.rootDir = caseTmpDir
+			bot.titleFetcher = func(ctx context.Context, u string) (string, error) {
+				if u == "https://example.com" {
+					return "Example", nil
+				}
+				return "", fmt.Errorf("not found")
+			}
 			ctx := context.Background()
 
 			update := Update{}

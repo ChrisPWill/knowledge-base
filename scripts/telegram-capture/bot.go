@@ -16,6 +16,7 @@ import (
 )
 
 var tagRegex = regexp.MustCompile(`(^|\s)#\S+`)
+var urlRegex = regexp.MustCompile(`https?://[^\s]+`)
 
 type Update struct {
 	UpdateID int `json:"update_id"`
@@ -118,13 +119,49 @@ type Bot struct {
 	lastEntryTime       time.Time
 	isToggledAlso       bool
 	lastInteractionTime time.Time
+	titleFetcher        func(ctx context.Context, url string) (string, error)
+}
+
+func defaultTitleFetcher(ctx context.Context, u string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	// Mimic a real browser to avoid some bot blocks
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; LogseqBot/1.0)")
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("status %d", resp.StatusCode)
+	}
+
+	// Read first 10KB to find title
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10240))
+	if err != nil {
+		return "", err
+	}
+
+	re := regexp.MustCompile(`(?i)<title>(.*?)</title>`)
+	matches := re.FindStringSubmatch(string(body))
+	if len(matches) < 2 {
+		return "", fmt.Errorf("no title found")
+	}
+
+	return strings.TrimSpace(matches[1]), nil
 }
 
 func NewBot(client TelegramClient, offsetFile string) *Bot {
 	return &Bot{
-		client:     client,
-		offsetFile: offsetFile,
-		rootDir:    ".",
+		client:       client,
+		offsetFile:   offsetFile,
+		rootDir:      ".",
+		titleFetcher: defaultTitleFetcher,
 	}
 }
 
@@ -333,6 +370,15 @@ func (b *Bot) handleMessage(ctx context.Context, update Update) (string, string,
 	// Only default tag top-level notes
 	if !isAlso && !tagRegex.MatchString(cleanMsg) {
 		cleanMsg = cleanMsg + " #inbox"
+	}
+
+	// URL scraping
+	urls := urlRegex.FindAllString(cleanMsg, -1)
+	for _, u := range urls {
+		title, err := b.titleFetcher(ctx, u)
+		if err == nil && title != "" {
+			cleanMsg = strings.ReplaceAll(cleanMsg, u, fmt.Sprintf("[%s](%s)", title, u))
+		}
 	}
 
 	timeStr := now.Format("15:04")
