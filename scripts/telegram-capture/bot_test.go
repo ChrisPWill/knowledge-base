@@ -751,7 +751,7 @@ func TestToggleAlso(t *testing.T) {
 	bot.processMessage(ctx, Update{Message: &Message{Text: "Auto Nested", Chat: Chat{ID: 1}}}, fixedNow.Add(time.Minute))
 
 	// 4. Force timeout
-	bot.lastInteractionTime = bot.lastInteractionTime.Add(-6 * time.Minute)
+	bot.state.LastInteractionTime = bot.state.LastInteractionTime.Add(-6 * time.Minute)
 
 	// 5. Send message (should be top-level, with #inbox)
 	bot.processMessage(ctx, Update{Message: &Message{Text: "Top Level Again", Chat: Chat{ID: 1}}}, fixedNow.Add(10*time.Minute))
