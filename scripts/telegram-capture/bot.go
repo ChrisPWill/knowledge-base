@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,27 +30,37 @@ type GetUpdatesResponse struct {
 }
 
 type TelegramClient interface {
-	GetUpdates(offset int, timeout int) ([]Update, error)
-	SendMessage(chatID int64, text string) error
+	GetUpdates(ctx context.Context, offset int, timeout int) ([]Update, error)
+	SendMessage(ctx context.Context, chatID int64, text string) error
 }
 
 type httpTelegramClient struct {
 	token  string
 	apiURL string
+	httpClient *http.Client
 }
 
 func NewHTTPTelegramClient(token string) *httpTelegramClient {
 	return &httpTelegramClient{
 		token:  token,
 		apiURL: fmt.Sprintf("https://api.telegram.org/bot%s", token),
+		httpClient: &http.Client{
+			Timeout: 70 * time.Second, // Slightly longer than the long-polling timeout
+		},
 	}
 }
 
-func (c *httpTelegramClient) GetUpdates(offset int, timeout int) ([]Update, error) {
+func (c *httpTelegramClient) GetUpdates(ctx context.Context, offset int, timeout int) ([]Update, error) {
 	u := fmt.Sprintf("%s/getUpdates?offset=%d&timeout=%d", c.apiURL, offset, timeout)
-	resp, err := http.Get(u)
+	
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -58,7 +70,7 @@ func (c *httpTelegramClient) GetUpdates(offset int, timeout int) ([]Update, erro
 
 	var data GetUpdatesResponse
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	if !data.OK {
@@ -68,15 +80,21 @@ func (c *httpTelegramClient) GetUpdates(offset int, timeout int) ([]Update, erro
 	return data.Result, nil
 }
 
-func (c *httpTelegramClient) SendMessage(chatID int64, text string) error {
+func (c *httpTelegramClient) SendMessage(ctx context.Context, chatID int64, text string) error {
 	u := fmt.Sprintf("%s/sendMessage", c.apiURL)
 	formData := url.Values{}
 	formData.Set("chat_id", fmt.Sprintf("%d", chatID))
 	formData.Set("text", text)
 
-	resp, err := http.PostForm(u, formData)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(formData.Encode()))
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -100,35 +118,68 @@ func NewBot(client TelegramClient, offsetFile string) *Bot {
 	}
 }
 
-func (b *Bot) Run() error {
+func (b *Bot) Run(ctx context.Context) error {
 	offset := 0
 	if data, err := os.ReadFile(b.offsetFile); err == nil {
 		fmt.Sscanf(string(data), "%d", &offset)
 	}
 
-	fmt.Println("Starting Telegram capture bot (Go version)...")
+	slog.Info("Starting Telegram capture bot (Go version)...")
+
+	backoff := 1 * time.Second
+	maxBackoff := 1 * time.Minute
 
 	for {
-		updates, err := b.client.GetUpdates(offset, 60)
-		if err != nil {
-			fmt.Printf("Error getting updates: %v\n", err)
-			time.Sleep(5 * time.Second)
-			continue
-		}
-
-		for _, update := range updates {
-			if update.Message.Text != "" {
-				b.processMessage(update)
+		select {
+		case <-ctx.Done():
+			slog.Info("Bot shutting down...")
+			return ctx.Err()
+		default:
+			updates, err := b.client.GetUpdates(ctx, offset, 60)
+			if err != nil {
+				if ctx.Err() != nil {
+					continue
+				}
+				slog.Error("Error getting updates", "error", err, "retry_in", backoff)
+				
+				select {
+				case <-time.After(backoff):
+					backoff *= 2
+					if backoff > maxBackoff {
+						backoff = maxBackoff
+					}
+				case <-ctx.Done():
+					continue
+				}
+				continue
 			}
-			offset = update.UpdateID + 1
-			os.WriteFile(b.offsetFile, []byte(fmt.Sprintf("%d", offset)), 0644)
+
+			// Reset backoff on success
+			backoff = 1 * time.Second
+
+			for _, update := range updates {
+				if update.Message.Text != "" {
+					if err := b.processMessage(ctx, update); err != nil {
+						slog.Error("Error processing message", "update_id", update.UpdateID, "error", err)
+					}
+				}
+				offset = update.UpdateID + 1
+				if err := os.WriteFile(b.offsetFile, []byte(fmt.Sprintf("%d", offset)), 0644); err != nil {
+					slog.Error("Error saving offset", "offset", offset, "error", err)
+				}
+			}
+			
+			// Small sleep to avoid tight loop if GetUpdates returns immediately
+			select {
+			case <-time.After(500 * time.Millisecond):
+			case <-ctx.Done():
+			}
 		}
-		time.Sleep(1 * time.Second)
 	}
 }
 
-func (b *Bot) processMessage(update Update) {
-	msg := update.Message.Text
+func (b *Bot) processMessage(ctx context.Context, update Update) error {
+	msg := strings.TrimSpace(update.Message.Text)
 	profile := "personal"
 	cleanMsg := msg
 
@@ -141,6 +192,12 @@ func (b *Bot) processMessage(update Update) {
 		cleanMsg = strings.TrimPrefix(msg, "/p ")
 		cleanMsg = strings.TrimPrefix(cleanMsg, "/personal ")
 	}
+	
+	cleanMsg = strings.TrimSpace(cleanMsg)
+	if cleanMsg == "" {
+		slog.Debug("Ignoring empty message", "update_id", update.UpdateID)
+		return nil
+	}
 
 	now := time.Now()
 	dateStr := now.Format("2006_01_02")
@@ -150,23 +207,25 @@ func (b *Bot) processMessage(update Update) {
 	journalFile := filepath.Join(journalDir, dateStr+".md")
 
 	if err := os.MkdirAll(journalDir, 0755); err != nil {
-		fmt.Printf("Error creating directory %s: %v\n", journalDir, err)
-		return
+		return fmt.Errorf("failed to create directory %s: %w", journalDir, err)
 	}
 
 	entry := fmt.Sprintf("- %s %s\n", timeStr, cleanMsg)
 	f, err := os.OpenFile(journalFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		fmt.Printf("Error opening file %s: %v\n", journalFile, err)
-		return
+		return fmt.Errorf("failed to open file %s: %w", journalFile, err)
 	}
 	defer f.Close()
 
 	if _, err := f.WriteString(entry); err != nil {
-		fmt.Printf("Error writing to file %s: %v\n", journalFile, err)
-		return
+		return fmt.Errorf("failed to write to file %s: %w", journalFile, err)
 	}
 
-	fmt.Printf("Captured to %s journal: %s\n", profile, cleanMsg)
-	b.client.SendMessage(update.Message.Chat.ID, fmt.Sprintf("Captured to %s journal.", profile))
+	slog.Info("Captured message", "profile", profile, "message", cleanMsg)
+	
+	if err := b.client.SendMessage(ctx, update.Message.Chat.ID, fmt.Sprintf("Captured to %s journal.", profile)); err != nil {
+		slog.Warn("Failed to send confirmation message", "error", err)
+	}
+	
+	return nil
 }

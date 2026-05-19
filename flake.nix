@@ -6,11 +6,10 @@
     utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, utils }:
+  outputs = { nixpkgs, utils }:
     utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        goDeps = with pkgs; [ go ];
       in
       {
         packages.default = pkgs.buildGoModule {
