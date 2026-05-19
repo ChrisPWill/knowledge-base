@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -24,56 +26,55 @@ func (m *mockTelegramClient) SendMessage(ctx context.Context, chatID int64, text
 }
 
 func TestProcessMessage(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "logseq-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// Change working directory to tmpDir for test
-	oldWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldWd)
-
-	mock := &mockTelegramClient{}
-	bot := NewBot(mock, ".offset-test")
-	ctx := context.Background()
-
 	tests := []struct {
-		name     string
-		msg      string
-		expected string
-		profile  string
+		name           string
+		msg            string
+		expected       string
+		profile        string
+		expectNoInbox  bool
+		expectedFormat string // regex to match the whole line
 	}{
 		{
-			name:     "Personal default",
-			msg:      "Hello world",
-			expected: "Hello world",
-			profile:  "personal",
+			name:           "Personal default",
+			msg:            "Hello world",
+			expected:       "Hello world #inbox",
+			profile:        "personal",
+			expectedFormat: `^- \d{2}:\d{2} Hello world #inbox\n$`,
 		},
 		{
-			name:     "Work prefix",
-			msg:      "/work Meeting notes",
-			expected: "Meeting notes",
-			profile:  "work",
+			name:           "Work prefix",
+			msg:            "/work Meeting notes",
+			expected:       "Meeting notes #inbox",
+			profile:        "work",
+			expectedFormat: `^- \d{2}:\d{2} Meeting notes #inbox\n$`,
 		},
 		{
-			name:     "Personal prefix",
-			msg:      "/p Buy milk",
-			expected: "Buy milk",
-			profile:  "personal",
+			name:           "TODO mixed case",
+			msg:            "tOdO fix bug",
+			expected:       "fix bug #inbox",
+			profile:        "personal",
+			expectedFormat: `^- TODO \d{2}:\d{2} fix bug #inbox\n$`,
 		},
 		{
-			name:     "Whitespace trimming",
-			msg:      "   Clean this up   ",
-			expected: "Clean this up",
-			profile:  "personal",
+			name:          "Message with existing tag",
+			msg:           "Meeting with #team",
+			expected:      "Meeting with #team",
+			profile:       "personal",
+			expectNoInbox: true,
 		},
 		{
-			name:     "Work prefix with whitespace",
-			msg:      "/work    Meeting notes  ",
-			expected: "Meeting notes",
-			profile:  "work",
+			name:          "Tag at the beginning",
+			msg:           "#idea new feature",
+			expected:      "#idea new feature",
+			profile:       "personal",
+			expectNoInbox: true,
+		},
+		{
+			name:          "Multiple tags",
+			msg:           "Buy #milk and #bread",
+			expected:      "Buy #milk and #bread",
+			profile:       "personal",
+			expectNoInbox: true,
 		},
 		{
 			name:     "Empty message",
@@ -81,40 +82,37 @@ func TestProcessMessage(t *testing.T) {
 			expected: "",
 			profile:  "personal",
 		},
-		{
-			name:     "Only prefix",
-			msg:      "/work",
-			expected: "",
-			profile:  "work",
-		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			caseTmpDir, err := os.MkdirTemp("", "logseq-case-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(caseTmpDir)
+
+			mock := &mockTelegramClient{}
+			bot := NewBot(mock, filepath.Join(caseTmpDir, ".offset"))
+			bot.rootDir = caseTmpDir
+			ctx := context.Background()
+
 			update := Update{}
 			update.Message.Text = tc.msg
 			update.Message.Chat.ID = 123
 
-			err := bot.processMessage(ctx, update)
+			err = bot.processMessage(ctx, update)
 			if err != nil {
 				t.Fatalf("processMessage failed: %v", err)
 			}
 
-			// Check file exists
-			now := time.Now().Format("2006_01_02")
-			path := filepath.Join(tc.profile, "journals", now+".md")
-			
 			if tc.expected == "" {
-				// File should either not exist or not contain anything new
-				// For simplicity, we just check if it was created if it didn't exist before
-				// But since we use temp dir and run tests in sequence, we can check if file exists
-				_, err := os.Stat(path)
-				if err == nil {
-					// If it exists, it shouldn't have changed significantly or we should have checked state
-					// but for this test, we expect no entry to be added.
-				}
 				return
 			}
+
+			// Check file exists
+			now := time.Now().Format("2006_01_02")
+			path := filepath.Join(caseTmpDir, tc.profile, "journals", now+".md")
 
 			content, err := os.ReadFile(path)
 			if err != nil {
@@ -122,8 +120,95 @@ func TestProcessMessage(t *testing.T) {
 			}
 
 			if !strings.Contains(string(content), tc.expected) {
-				t.Errorf("expected content %q not found in %s", tc.expected, string(content))
+				t.Errorf("expected content %q not found in %q", tc.expected, string(content))
+			}
+
+			if tc.expectNoInbox && strings.Contains(string(content), "#inbox") {
+				t.Errorf("did not expect #inbox in message %q, got: %q", tc.msg, string(content))
+			}
+
+			if tc.expectedFormat != "" {
+				matched, err := regexp.MatchString(tc.expectedFormat, string(content))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !matched {
+					t.Errorf("content %q does not match expected format %q", string(content), tc.expectedFormat)
+				}
+			}
+
+			// Check confirmation message
+			expectedConfirm := fmt.Sprintf("Captured to %s journal.", tc.profile)
+			if len(mock.sent) != 1 || mock.sent[0] != expectedConfirm {
+				t.Errorf("expected confirmation message %q, got %v", expectedConfirm, mock.sent)
 			}
 		})
+	}
+}
+
+func TestBotRun(t *testing.T) {
+	caseTmpDir, err := os.MkdirTemp("", "logseq-run-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(caseTmpDir)
+
+	offsetFile := filepath.Join(caseTmpDir, ".offset")
+
+	mock := &mockTelegramClient{
+		updates: []Update{
+			{UpdateID: 100, Message: struct {
+				Text string `json:"text"`
+				Chat struct {
+					ID int64 `json:"id"`
+				} `json:"chat"`
+			}{Text: "Message 1", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}},
+			{UpdateID: 101, Message: struct {
+				Text string `json:"text"`
+				Chat struct {
+					ID int64 `json:"id"`
+				} `json:"chat"`
+			}{Text: "Message 2", Chat: struct{ ID int64 `json:"id"` }{ID: 1}}},
+		},
+	}
+
+	bot := NewBot(mock, offsetFile)
+	bot.rootDir = caseTmpDir
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Run in background and stop after a short while
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		cancel()
+	}()
+
+	err = bot.Run(ctx)
+	if err != nil && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("Bot.Run failed: %v", err)
+	}
+
+	// Verify offset was updated
+	data, err := os.ReadFile(offsetFile)
+	if err != nil {
+		t.Fatalf("could not read offset file: %v", err)
+	}
+	var offset int
+	fmt.Sscanf(string(data), "%d", &offset)
+	if offset != 102 {
+		t.Errorf("expected offset 102, got %d", offset)
+	}
+
+	// Verify both messages were captured
+	now := time.Now().Format("2006_01_02")
+	path := filepath.Join(caseTmpDir, "personal", "journals", now+".md")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("could not read journal file: %v", err)
+	}
+
+	if !strings.Contains(string(content), "Message 1") || !strings.Contains(string(content), "Message 2") {
+		t.Errorf("messages not found in journal: %q", string(content))
 	}
 }

@@ -10,9 +10,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
+
+var tagRegex = regexp.MustCompile(`(^|\s)#\S+`)
 
 type Update struct {
 	UpdateID int `json:"update_id"`
@@ -109,12 +112,14 @@ func (c *httpTelegramClient) SendMessage(ctx context.Context, chatID int64, text
 type Bot struct {
 	client     TelegramClient
 	offsetFile string
+	rootDir    string
 }
 
 func NewBot(client TelegramClient, offsetFile string) *Bot {
 	return &Bot{
 		client:     client,
 		offsetFile: offsetFile,
+		rootDir:    ".",
 	}
 }
 
@@ -199,18 +204,33 @@ func (b *Bot) processMessage(ctx context.Context, update Update) error {
 		return nil
 	}
 
+	isTodo := false
+	if strings.HasPrefix(strings.ToLower(cleanMsg), "todo ") {
+		isTodo = true
+		cleanMsg = strings.TrimSpace(cleanMsg[len("todo "):])
+	}
+
+	if !tagRegex.MatchString(cleanMsg) {
+		cleanMsg = cleanMsg + " #inbox"
+	}
+
 	now := time.Now()
 	dateStr := now.Format("2006_01_02")
 	timeStr := now.Format("15:04")
 
-	journalDir := filepath.Join(profile, "journals")
+	journalDir := filepath.Join(b.rootDir, profile, "journals")
 	journalFile := filepath.Join(journalDir, dateStr+".md")
 
 	if err := os.MkdirAll(journalDir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", journalDir, err)
 	}
 
-	entry := fmt.Sprintf("- %s %s\n", timeStr, cleanMsg)
+	var entry string
+	if isTodo {
+		entry = fmt.Sprintf("- TODO %s %s\n", timeStr, cleanMsg)
+	} else {
+		entry = fmt.Sprintf("- %s %s\n", timeStr, cleanMsg)
+	}
 	f, err := os.OpenFile(journalFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open file %s: %w", journalFile, err)
