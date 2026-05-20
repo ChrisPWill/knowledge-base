@@ -2,6 +2,9 @@
 journals/
 pages/
 assets/
+.recycle/
+.personal/
+.work/
 
 # Ignore Logseq cache and state tracking
 **/pages_metadata.edn
@@ -20,3 +23,4 @@ assets/
 # Telegram Bot Secrets and State
 .env
 .offset
+.offset.map
