@@ -14,9 +14,9 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	slog.SetDefault(logger)
 
-	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	token := os.Getenv("LOGSEQ_CAPTURE_TELEGRAM_API_KEY")
 	if token == "" {
-		slog.Error("TELEGRAM_BOT_TOKEN is not set")
+		slog.Error("LOGSEQ_CAPTURE_TELEGRAM_API_KEY is not set")
 		os.Exit(1)
 	}
 

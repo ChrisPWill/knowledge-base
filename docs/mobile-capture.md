@@ -10,17 +10,17 @@ This project includes a lightweight Telegram bot capture system that allows you 
 3. (Optional but recommended) Set a description and profile picture for your bot.
 
 ### 2. Configure Secrets
-The bot requires the `TELEGRAM_BOT_TOKEN` environment variable.
+The bot requires the `LOGSEQ_CAPTURE_TELEGRAM_API_KEY` environment variable.
 
 #### A. Nix/Direnv (Recommended)
 If you use `direnv`, create a `.envrc` file:
 ```bash
-export TELEGRAM_BOT_TOKEN="your_token_here"
+export LOGSEQ_CAPTURE_TELEGRAM_API_KEY="your_token_here"
 ```
 
 #### B. Manual Export
 ```bash
-export TELEGRAM_BOT_TOKEN="your_token_here"
+export LOGSEQ_CAPTURE_TELEGRAM_API_KEY="your_token_here"
 ```
 
 ### 3. Running the Capture Script
@@ -34,7 +34,7 @@ nix run .
 #### Manual Run
 Ensure you have Go installed, then:
 ```bash
-cd scripts/telegram-capture && go run .
+cd apps/logseq-capture && go run .
 ```
 
 ## Usage

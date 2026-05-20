@@ -405,7 +405,7 @@ func TestProcessMessage(t *testing.T) {
 			}
 
 			// Check file exists
-			now := time.Now().Format("2006_01_02")
+			now := fixedNow.Format("2006_01_02")
 			path := filepath.Join(caseTmpDir, tc.profile, "journals", now+".md")
 
 			content, err := os.ReadFile(path)
@@ -511,7 +511,7 @@ func TestNesting(t *testing.T) {
 	bot.processMessage(ctx, update3, fixedNow.Add(2*time.Hour))
 
 	// Verify file content
-	now := time.Now().Format("2006_01_02")
+	now := fixedNow.Format("2006_01_02")
 	path := filepath.Join(caseTmpDir, "personal", "journals", now+".md")
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -545,19 +545,19 @@ func TestStubHandling(t *testing.T) {
 	}
 	defer os.RemoveAll(caseTmpDir)
 
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	mock := &mockTelegramClient{}
 	bot := NewBot(mock, filepath.Join(caseTmpDir, ".offset"))
 	bot.rootDir = caseTmpDir
 	ctx := context.Background()
 
 	// 1. Pre-create file with a single "-" stub
-	now := time.Now().Format("2006_01_02")
+	now := fixedNow.Format("2006_01_02")
 	path := filepath.Join(caseTmpDir, "personal", "journals", now+".md")
 	os.MkdirAll(filepath.Dir(path), 0755)
 	os.WriteFile(path, []byte("-"), 0644)
 
 	// 2. Send message
-	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	bot.processMessage(ctx, Update{Message: &Message{Text: "Clean Note", Chat: Chat{ID: 1}}}, fixedNow)
 
 	// 3. Verify content
@@ -766,7 +766,7 @@ func TestToggleAlso(t *testing.T) {
 	bot.processMessage(ctx, Update{Message: &Message{Text: "Disabled Manually", Chat: Chat{ID: 1}}}, fixedNow.Add(13*time.Minute))
 
 	// Verify file content
-	now := time.Now().Format("2006_01_02")
+	now := fixedNow.Format("2006_01_02")
 	path := filepath.Join(caseTmpDir, "personal", "journals", now+".md")
 	content, err := os.ReadFile(path)
 	if err != nil {

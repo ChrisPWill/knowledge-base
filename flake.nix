@@ -13,9 +13,9 @@
       in
       {
         packages.default = pkgs.buildGoModule {
-          pname = "telegram-capture";
+          pname = "logseq-capture";
           version = "0.1.0";
-          src = ./scripts/telegram-capture;
+          src = ./apps/logseq-capture;
           vendorHash = "sha256-Vcw4KsE2m27MTEOc+hnkvu3sFmtGyFO+hML3SFksSDU=";
         };
 

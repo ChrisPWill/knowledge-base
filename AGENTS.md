@@ -7,8 +7,8 @@
     - Scripts and source code (`scripts/`, `flake.nix`).
 
 ## Testing
-- The `telegram-capture` tool is written in Go.
-- Any changes to the capture logic **MUST** be accompanied by corresponding unit tests in `scripts/telegram-capture/bot_test.go`.
+- The `logseq-capture` tool is written in Go.
+- Any changes to the capture logic **MUST** be accompanied by corresponding unit tests in `apps/logseq-capture/bot_test.go`.
 - Run `nix flake check` to ensure all tests pass before finalizing changes.
 
 ## Strict Prohibitions

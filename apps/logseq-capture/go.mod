@@ -1,4 +1,4 @@
-module telegram-capture
+module logseq-capture
 
 go 1.26.2
 
