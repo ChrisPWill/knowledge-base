@@ -8,6 +8,13 @@ This repository provides a structured boilerplate for a local-first Zettelkasten
 - `docs/`: System documentation and guides.
 - `scripts/`: Utility scripts for system health.
 
+## Key Features
+- **Local-First Sync**: Uses Syncthing for private, peer-to-peer note synchronization across devices.
+- **Mobile Capture**: Integrated Telegram bot for capturing notes, TODOs, and media directly to your journals.
+- **Smart Formatting**: Automatic TODO creation, priority handling, and natural language scheduling (e.g., "scheduled for tomorrow").
+- **Zettelkasten Workflow**: Pre-configured structure for Literature, Permanent, and Structure notes (MOCs).
+- **Privacy-First**: Note content is ignored by Git/Jujutsu; only system configurations and documentation are tracked.
+
 ## Getting Started
 
 1. **Initialize the Repository**:
