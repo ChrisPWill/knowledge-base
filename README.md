@@ -40,3 +40,10 @@ Run the health check script to ensure no sensitive note content is being acciden
 ```bash
 ./scripts/health-check.sh
 ```
+
+## Privacy & Security
+
+This repository is a **structural boilerplate**. 
+- The `.gitignore` is configured to exclude all note content (`journals/`, `pages/`, `assets/`).
+- Only configuration files (`.logseq/*.edn`, `.logseq/*.css`) and documentation are tracked.
+- **Never** disable the `health-check.sh` script if you plan to contribute, as it protects against accidental content leaks.

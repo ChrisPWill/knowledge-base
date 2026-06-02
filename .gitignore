@@ -24,3 +24,9 @@ assets/
 .env
 .offset
 .offset.map
+
+# Syncthing operational files
+.stfolder/
+.stversions/
+.stignore
+.stfolder.removed-*
