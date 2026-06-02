@@ -1,6 +1,6 @@
 # Logseq Zettelkasten Boilerplate (Local-First)
 
-This repository provides a structured boilerplate for a local-first Zettelkasten system using Logseq. It uses Jujutsu (`jj`) for version control of configurations and documentation, while note content is synced via Syncthing.
+This repository provides a structured boilerplate for a local-first Zettelkasten system using Logseq. Note content is synced between other devices and mobile using Syncthing. It supports note capture via a smart Telegram bot.
 
 ## Structure
 - `personal/`: Logseq graph for personal notes.
