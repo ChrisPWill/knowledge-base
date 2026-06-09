@@ -32,7 +32,7 @@ let
       fi
 
       case "$__kb_last" in
-        ''|*[!0-9]*)
+        ""|*[!0-9]*)
           __kb_last=0
           ;;
       esac
