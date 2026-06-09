@@ -13,10 +13,12 @@ This project includes a lightweight Telegram bot capture system that allows you 
 The bot requires the `LOGSEQ_CAPTURE_TELEGRAM_API_KEY` environment variable.
 
 #### A. Nix/Direnv (Recommended)
-If you use `direnv`, create a `.envrc` file:
+If you use `direnv`, create a `.envrc` file with:
 ```bash
-export LOGSEQ_CAPTURE_TELEGRAM_API_KEY="your_token_here"
+use flake
 ```
+
+Then export `LOGSEQ_CAPTURE_TELEGRAM_API_KEY` in your shell or a separate local secrets file.
 
 #### B. Manual Export
 ```bash
