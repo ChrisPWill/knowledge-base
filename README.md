@@ -48,6 +48,28 @@ Run the health check script to ensure no sensitive note content is being acciden
 ./scripts/health-check.sh
 ```
 
+## Home Manager Shell Summary
+
+This flake also exposes `homeManagerModules.knowledge-base` for an optional shell-startup summary of tagged Logseq content.
+
+Example Home Manager configuration:
+```nix
+{
+  imports = [ inputs.knowledge-base.homeManagerModules.knowledge-base ];
+
+  programs."knowledge-base".logseqShellSummary = {
+    enable = true;
+    personalPath = "/home/alice/knowledge-base/personal";
+    workPath = "/home/alice/knowledge-base/work";
+    countOnlyTags = [ "private" ];
+    digestTags = [ "project/foo" "ops+prod" ];
+    intervalSeconds = 3600;
+  };
+}
+```
+
+The expensive search runs in a background scheduler and the shell hook only prints the cached summary, so interactive shell startup stays fast.
+
 ## Privacy & Security
 
 This repository is a **structural boilerplate**. 
