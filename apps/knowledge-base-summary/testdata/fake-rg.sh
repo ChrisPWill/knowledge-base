@@ -1,7 +1,16 @@
 #!/bin/sh
 
 for arg in "$@"; do
-  root="$arg"
+  case "$arg" in
+    */journals)
+      root=${arg%/journals}
+      ;;
+    */pages)
+      if [ -z "$root" ]; then
+        root=${arg%/pages}
+      fi
+      ;;
+  esac
 done
 
 cat <<EOF

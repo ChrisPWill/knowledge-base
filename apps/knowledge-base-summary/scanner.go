@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -92,7 +93,11 @@ func BuildSummary(cfg Config) (string, error) {
 
 	countOnlySet := make(map[string]struct{}, len(cfg.CountOnlyTags))
 	for _, tag := range cfg.CountOnlyTags {
-		countOnlySet[tag] = struct{}{}
+		normalized, err := normalizeTag(tag)
+		if err != nil {
+			return "", err
+		}
+		countOnlySet[normalized] = struct{}{}
 	}
 
 	for _, graph := range graphs {
@@ -129,15 +134,22 @@ func scanGraph(graphName, root, combinedPattern string, patterns []tagPattern, c
 		return nil, fmt.Errorf("ripgrep is required but was not found in PATH: %w", err)
 	}
 
+	searchRoots, err := existingGraphSearchRoots(root)
+	if err != nil {
+		return nil, err
+	}
+	if len(searchRoots) == 0 {
+		return map[string]*tagSummary{}, nil
+	}
+
 	args := []string{
 		"--json",
 		"--line-number",
 		"--with-filename",
-		"--glob", "journals/**/*.md",
-		"--glob", "pages/**/*.md",
+		"--glob", "*.md",
 		"--regexp", combinedPattern,
-		root,
 	}
+	args = append(args, searchRoots...)
 
 	cmd := exec.Command(rgPath, args...)
 	output, err := cmd.CombinedOutput()
@@ -198,18 +210,43 @@ func scanGraph(graphName, root, combinedPattern string, patterns []tagPattern, c
 	return summary, nil
 }
 
+func existingGraphSearchRoots(root string) ([]string, error) {
+	candidates := []string{
+		filepath.Join(root, "journals"),
+		filepath.Join(root, "pages"),
+	}
+
+	roots := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		switch {
+		case err == nil && info.IsDir():
+			roots = append(roots, candidate)
+		case err == nil:
+			continue
+		case os.IsNotExist(err):
+			continue
+		default:
+			return nil, fmt.Errorf("failed to inspect graph path %s: %w", candidate, err)
+		}
+	}
+
+	return roots, nil
+}
+
 func compileTagPatterns(tags []string) ([]tagPattern, error) {
 	patterns := make([]tagPattern, 0, len(tags))
 	for _, tag := range tags {
-		if strings.TrimSpace(tag) == "" {
-			return nil, fmt.Errorf("tag names must not be empty")
+		normalized, err := normalizeTag(tag)
+		if err != nil {
+			return nil, err
 		}
-		quoted := regexp.QuoteMeta(tag)
+		quoted := regexp.QuoteMeta(normalized)
 		pattern, err := regexp.Compile(`(^|[^A-Za-z0-9_/\-])#` + quoted + `($|[^A-Za-z0-9_/\-])|\[\[` + quoted + `\]\]`)
 		if err != nil {
-			return nil, fmt.Errorf("failed to compile pattern for tag %q: %w", tag, err)
+			return nil, fmt.Errorf("failed to compile pattern for tag %q: %w", normalized, err)
 		}
-		patterns = append(patterns, tagPattern{Name: tag, Regex: pattern})
+		patterns = append(patterns, tagPattern{Name: normalized, Regex: pattern})
 	}
 	return patterns, nil
 }
@@ -217,9 +254,31 @@ func compileTagPatterns(tags []string) ([]tagPattern, error) {
 func buildRGPattern(tags []string) string {
 	parts := make([]string, 0, len(tags))
 	for _, tag := range tags {
-		parts = append(parts, regexp.QuoteMeta(tag))
+		normalized, err := normalizeTag(tag)
+		if err != nil {
+			continue
+		}
+		parts = append(parts, regexp.QuoteMeta(normalized))
 	}
 	return `#(?:` + strings.Join(parts, `|`) + `)|\[\[(?:` + strings.Join(parts, `|`) + `)\]\]`
+}
+
+func normalizeTag(tag string) (string, error) {
+	trimmed := strings.TrimSpace(tag)
+	if trimmed == "" {
+		return "", fmt.Errorf("tag names must not be empty")
+	}
+	if strings.HasPrefix(trimmed, "#") {
+		trimmed = strings.TrimPrefix(trimmed, "#")
+	}
+	if strings.HasPrefix(trimmed, "[[") && strings.HasSuffix(trimmed, "]]") {
+		trimmed = strings.TrimSuffix(strings.TrimPrefix(trimmed, "[["), "]]")
+	}
+	trimmed = strings.TrimSpace(trimmed)
+	if trimmed == "" {
+		return "", fmt.Errorf("tag names must not be empty")
+	}
+	return trimmed, nil
 }
 
 func orderedUniqueTags(groups ...[]string) []string {
@@ -227,15 +286,15 @@ func orderedUniqueTags(groups ...[]string) []string {
 	var tags []string
 	for _, group := range groups {
 		for _, tag := range group {
-			trimmed := strings.TrimSpace(tag)
-			if trimmed == "" {
+			normalized, err := normalizeTag(tag)
+			if err != nil {
 				continue
 			}
-			if _, ok := seen[trimmed]; ok {
+			if _, ok := seen[normalized]; ok {
 				continue
 			}
-			seen[trimmed] = struct{}{}
-			tags = append(tags, trimmed)
+			seen[normalized] = struct{}{}
+			tags = append(tags, normalized)
 		}
 	}
 	return tags

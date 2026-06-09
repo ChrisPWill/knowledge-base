@@ -8,7 +8,7 @@ import (
 )
 
 func TestBuildRGPatternEscapesTags(t *testing.T) {
-	pattern := buildRGPattern([]string{"project/foo", "ops+prod"})
+	pattern := buildRGPattern([]string{"#project/foo", "[[ops+prod]]"})
 	if !strings.Contains(pattern, `project/foo`) {
 		t.Fatalf("expected namespaced tag in pattern, got %q", pattern)
 	}
@@ -18,7 +18,7 @@ func TestBuildRGPatternEscapesTags(t *testing.T) {
 }
 
 func TestCompileTagPatternsMatchHashAndRefs(t *testing.T) {
-	patterns, err := compileTagPatterns([]string{"project/foo", "ops"})
+	patterns, err := compileTagPatterns([]string{"#project/foo", "[[ops]]"})
 	if err != nil {
 		t.Fatalf("compileTagPatterns returned error: %v", err)
 	}
@@ -95,8 +95,8 @@ func TestBuildSummaryUsesRipgrepOutput(t *testing.T) {
 	cfg := Config{
 		PersonalPath:   personalRoot,
 		WorkPath:       workRoot,
-		CountOnlyTags:  []string{"private"},
-		DigestTags:     []string{"project/foo", "ops+prod"},
+		CountOnlyTags:  []string{"#private"},
+		DigestTags:     []string{"[[project/foo]]", "#ops+prod"},
 		MaxDigestItems: 2,
 		ExcerptLength:  80,
 	}
@@ -124,6 +124,28 @@ func TestBuildSummaryUsesRipgrepOutput(t *testing.T) {
 	}
 	if strings.Contains(summary, "private #project/foo") && strings.Contains(summary, "private: 1 matches\n  ") {
 		t.Fatalf("count-only tag should not render excerpts:\n%s", summary)
+	}
+}
+
+func TestNormalizeTag(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{input: "inbox", want: "inbox"},
+		{input: "#inbox", want: "inbox"},
+		{input: "[[inbox]]", want: "inbox"},
+		{input: " #project/foo ", want: "project/foo"},
+	}
+
+	for _, tc := range cases {
+		got, err := normalizeTag(tc.input)
+		if err != nil {
+			t.Fatalf("normalizeTag(%q) returned error: %v", tc.input, err)
+		}
+		if got != tc.want {
+			t.Fatalf("normalizeTag(%q) = %q, want %q", tc.input, got, tc.want)
+		}
 	}
 }
 
