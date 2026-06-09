@@ -69,6 +69,7 @@ Example Home Manager configuration:
 ```
 
 The expensive search runs in a background scheduler and the shell hook only prints the cached summary, so interactive shell startup stays fast.
+The shell hook also records when it last displayed the summary and will only print it once per `intervalSeconds`, even if you start multiple shells during that window.
 
 ## Privacy & Security
 

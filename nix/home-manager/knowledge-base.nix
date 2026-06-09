@@ -5,6 +5,7 @@ let
   cfg = config.programs."knowledge-base".logseqShellSummary;
   package = cfg.package;
   cachePath = cfg.cachePath;
+  displayStatePath = cfg.displayStatePath;
   refreshCommand = lib.escapeShellArgs (
     [
       "${package}/bin/knowledge-base-summary"
@@ -17,14 +18,54 @@ let
     ++ lib.concatMap (tag: [ "--count-only-tag" tag ]) cfg.countOnlyTags
     ++ lib.concatMap (tag: [ "--digest-tag" tag ]) cfg.digestTags
   );
+  dateBin = "${pkgs.coreutils}/bin/date";
+  catBin = "${pkgs.coreutils}/bin/cat";
+  mkdirBin = "${pkgs.coreutils}/bin/mkdir";
+  dirnameBin = "${pkgs.coreutils}/bin/dirname";
   posixShellHook = ''
     if [ -r "${cachePath}" ]; then
-      cat "${cachePath}"
+      __kb_now="$(${dateBin} +%s)"
+      __kb_last=""
+
+      if [ -r "${displayStatePath}" ]; then
+        __kb_last="$(${catBin} "${displayStatePath}" 2>/dev/null)"
+      fi
+
+      case "$__kb_last" in
+        ''|*[!0-9]*)
+          __kb_last=0
+          ;;
+      esac
+
+      if [ "$((__kb_now - __kb_last))" -ge "${toString cfg.intervalSeconds}" ]; then
+        ${mkdirBin} -p "$(${dirnameBin} "${displayStatePath}")"
+        printf '%s\n' "$__kb_now" > "${displayStatePath}"
+        ${catBin} "${cachePath}"
+      fi
     fi
   '';
   fishShellHook = ''
     if test -r "${cachePath}"
-      cat "${cachePath}"
+      set -l __kb_now (${
+        dateBin
+      } +%s)
+      set -l __kb_last 0
+
+      if test -r "${displayStatePath}"
+        set __kb_last (string trim -- (${
+          catBin
+        } "${displayStatePath}" 2>/dev/null))
+      end
+
+      if not string match -rq '^[0-9]+$' -- "$__kb_last"
+        set __kb_last 0
+      end
+
+      if test (math "$__kb_now - $__kb_last") -ge ${toString cfg.intervalSeconds}
+        ${mkdirBin} -p (${dirnameBin} "${displayStatePath}")
+        printf '%s\n' "$__kb_now" > "${displayStatePath}"
+        ${catBin} "${cachePath}"
+      end
     end
   '';
 in
@@ -85,6 +126,12 @@ in
       type = lib.types.str;
       default = "${config.home.homeDirectory}/.cache/knowledge-base/logseq-shell-summary/summary.txt";
       description = "Path to the rendered summary cache.";
+    };
+
+    displayStatePath = lib.mkOption {
+      type = lib.types.str;
+      default = "${config.home.homeDirectory}/.cache/knowledge-base/logseq-shell-summary/last-displayed";
+      description = "Path to the shell hook display-rate state file.";
     };
 
     shells = {
