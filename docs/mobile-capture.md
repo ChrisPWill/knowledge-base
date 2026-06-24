@@ -1,6 +1,6 @@
-# Mobile Capture via Telegram
+# Mobile Capture
 
-This project includes a lightweight Telegram bot capture system that allows you to send quick notes to your Logseq journals from your phone.
+This project includes a transport-agnostic Logseq capture service. Telegram remains the default runtime for mobile use, and a local daemon plus CLI are available for desktop capture and automation.
 
 ## Setup Instructions
 
@@ -10,7 +10,7 @@ This project includes a lightweight Telegram bot capture system that allows you 
 3. (Optional but recommended) Set a description and profile picture for your bot.
 
 ### 2. Configure Secrets
-The bot requires the `LOGSEQ_CAPTURE_TELEGRAM_API_KEY` environment variable.
+The default Telegram runtime requires the `LOGSEQ_CAPTURE_TELEGRAM_API_KEY` environment variable.
 
 #### A. Nix/Direnv (Recommended)
 If you use `direnv`, create a `.envrc` file with:
@@ -25,23 +25,59 @@ Then export `LOGSEQ_CAPTURE_TELEGRAM_API_KEY` in your shell or a separate local 
 export LOGSEQ_CAPTURE_TELEGRAM_API_KEY="your_token_here"
 ```
 
-### 3. Running the Capture Script
+### 3. Running The Default Telegram Runtime
 
-#### Using Nix (Recommended)
-You can run the script directly from the root of the repo:
+#### Using Nix
 ```bash
 nix run .
 ```
 
 #### Manual Run
-Ensure you have Go installed, then:
 ```bash
 cd apps/logseq-capture && go run .
 ```
 
+## Local Daemon And CLI
+
+The local daemon binds to `127.0.0.1:43123` by default. Override it with `LOGSEQ_CAPTURE_ADDR` if needed.
+
+Start the daemon:
+```bash
+cd apps/logseq-capture && go run . serve
+```
+
+Check daemon health:
+```bash
+cd apps/logseq-capture && go run . status
+```
+
+Send text capture requests:
+```bash
+cd apps/logseq-capture && go run . send "todo Buy milk tomorrow"
+```
+
+Send shared commands:
+```bash
+cd apps/logseq-capture && go run . command "help"
+cd apps/logseq-capture && go run . command "toggle also"
+```
+
+Review journals through the daemon:
+```bash
+cd apps/logseq-capture && go run . review today
+cd apps/logseq-capture && go run . review yesterday
+```
+
+Start an interactive REPL:
+```bash
+cd apps/logseq-capture && go run . cli
+```
+
+The first CLI version is text-only. Telegram-specific photo and voice capture still works through the default Telegram adapter path only.
+
 ## Usage
 
-Send a message to your bot to capture it. The bot provides immediate feedback for every message.
+Send a message to your bot, or send text to the local daemon with the CLI. Both paths share the same parser, formatter, review logic, and session behavior.
 
 ### Profile Selection
 - `/w [note]` or `/work [note]` - Captures to `work/journals/YYYY_MM_DD.md`.
@@ -72,9 +108,21 @@ Send `help` to see a general overview, or `help [topic]` for detailed info:
 - `help scheduling`
 - `help media`
 
+### Review
+- `/today` or `logseq-capture review today`
+- `/yesterday` or `logseq-capture review yesterday`
+
 ### Bot Feedback
 - ✅ **Success**: The bot will reply with the profile used and the exact formatted entry.
 - ❌ **Error**: If something goes wrong, the bot will reply with a detailed error message.
 
+## Local HTTP API
+
+The daemon exposes a localhost-only JSON API:
+- `POST /capture`
+- `POST /command`
+- `GET /review?day=today|yesterday`
+- `GET /health`
+
 ## Automation
-For a permanent setup, it is recommended to run this script as a systemd service.
+For a permanent setup, it is reasonable to run either the Telegram runtime or the local daemon as a systemd service, depending on which adapter you want active by default.

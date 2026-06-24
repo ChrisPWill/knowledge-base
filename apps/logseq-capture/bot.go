@@ -52,11 +52,11 @@ type Update struct {
 	EditedMessage *Message `json:"edited_message"`
 }
 
-// MessageMetadata tracks where a message was saved to allow for edits/deletes
+// MessageMetadata tracks where a message was saved to allow for edits/deletes.
 type MessageMetadata struct {
-	FilePath    string    `json:"file_path"`
-	Content     string    `json:"content"`      // The full line as written to the file
-	Timestamp   time.Time `json:"timestamp"`    // When it was captured
+	FilePath  string    `json:"file_path"`
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 type GetUpdatesResponse struct {
@@ -217,38 +217,11 @@ func (c *httpTelegramClient) DownloadFile(ctx context.Context, filePath string, 
 type Bot struct {
 	client       TelegramClient
 	offsetFile   string
-	rootDir      string
-	parser       *MessageParser
-	journal      *JournalStore
-	formatter    *LogseqFormatter
-	commands     *CommandDispatcher
-	media        *MediaService
-	state        SessionState
-	messageMap   map[int64]MessageMetadata
 	mapFile      string
+	rootDir      string
 	titleFetcher func(ctx context.Context, url string) (string, error)
-}
-
-func (b *Bot) loadMessageMap() {
-	if data, err := os.ReadFile(b.mapFile); err == nil {
-		json.Unmarshal(data, &b.messageMap)
-	}
-	if b.messageMap == nil {
-		b.messageMap = make(map[int64]MessageMetadata)
-	}
-}
-
-func (b *Bot) saveMessageMap() {
-	now := time.Now()
-	for id, meta := range b.messageMap {
-		if now.Sub(meta.Timestamp) > 24*time.Hour {
-			delete(b.messageMap, id)
-		}
-	}
-
-	if data, err := json.Marshal(b.messageMap); err == nil {
-		os.WriteFile(b.mapFile, data, 0644)
-	}
+	service      *CaptureService
+	media        *MediaService
 }
 
 func defaultTitleFetcher(ctx context.Context, u string) (string, error) {
@@ -286,17 +259,15 @@ func defaultTitleFetcher(ctx context.Context, u string) (string, error) {
 func NewBot(client TelegramClient, offsetFile string) *Bot {
 	rootDir := "."
 	fetcher := defaultTitleFetcher
+	service := NewCaptureService(rootDir)
+	service.SetTitleFetcher(fetcher)
 	return &Bot{
 		client:       client,
 		offsetFile:   offsetFile,
 		mapFile:      offsetFile + ".map",
 		rootDir:      rootDir,
-		parser:       NewMessageParser(rootDir, fetcher),
-		journal:      NewJournalStore(rootDir),
-		formatter:    &LogseqFormatter{},
-		commands:     NewCommandDispatcher(),
+		service:      service,
 		media:        NewMediaService(client, rootDir),
-		messageMap:   make(map[int64]MessageMetadata),
 		titleFetcher: fetcher,
 	}
 }
@@ -307,7 +278,7 @@ func (b *Bot) Run(ctx context.Context) error {
 		fmt.Sscanf(string(data), "%d", &offset)
 	}
 
-	b.loadMessageMap()
+	b.service.LoadMessageMap("telegram", b.mapFile)
 
 	slog.Info("Starting Telegram capture bot (Go version)...")
 
@@ -358,7 +329,7 @@ func (b *Bot) Run(ctx context.Context) error {
 				if err := os.WriteFile(b.offsetFile, []byte(fmt.Sprintf("%d", offset)), 0644); err != nil {
 					slog.Error("Error saving offset", "offset", offset, "error", err)
 				}
-				b.saveMessageMap()
+				b.service.SaveMessageMap("telegram", b.mapFile)
 			}
 
 			select {
@@ -370,204 +341,36 @@ func (b *Bot) Run(ctx context.Context) error {
 }
 
 func (b *Bot) processMessage(ctx context.Context, update Update, now time.Time) error {
-	// Re-sync rootDir and titleFetcher to parser/journal if they were changed (for tests)
-	b.parser.rootDir = b.rootDir
-	b.parser.titleFetcher = b.titleFetcher
-	b.parser.rules.rootDir = b.rootDir
-	b.journal.rootDir = b.rootDir
+	b.service.SetRootDir(b.rootDir)
+	b.service.SetTitleFetcher(b.titleFetcher)
 	b.media.rootDir = b.rootDir
 
-	// Handle toggle timeout
-	if b.state.IsToggledAlso && now.Sub(b.state.LastInteractionTime) > 5*time.Minute {
-		b.state.IsToggledAlso = false
-	}
-
-	if update.EditedMessage != nil {
-		return b.handleEdit(ctx, update, now)
-	}
-
 	msgObj := update.Message
-	msg := strings.TrimSpace(msgObj.Text)
+	if msgObj == nil {
+		msgObj = update.EditedMessage
+	}
 
-	// 1. Dispatch Commands
-	handled, err := b.commands.Dispatch(ctx, b, msgObj.Chat.ID, msg, now)
+	req, isCommand := b.mapUpdateToRequest(update, now)
+	downloader := AssetDownloader(b.media)
+	if isCommand {
+		downloader = nil
+	}
+
+	resp, err := b.service.Process(ctx, req, downloader)
 	if err != nil {
+		_ = b.client.SendMessage(ctx, msgObj.Chat.ID, fmt.Sprintf("❌ Error: %v", err))
 		return err
 	}
-	if handled {
+	if resp.Reply == "" {
 		return nil
 	}
-
-	// 2. Normal Capture
-	entry, profile, err := b.handleMessage(ctx, update, now)
-	if err != nil {
-		errMsg := fmt.Sprintf("❌ Error: %v", err)
-		b.client.SendMessage(ctx, msgObj.Chat.ID, errMsg)
-		return err
+	if resp.Entry != "" {
+		slog.Info("Captured message", "profile", resp.Profile, "entry", strings.TrimSpace(resp.Entry))
 	}
-
-	if entry == "" {
-		return nil
-	}
-
-	// Track metadata for future edits
-	b.messageMap[msgObj.MessageID] = MessageMetadata{
-		FilePath:  b.state.LastJournalFile,
-		Content:   entry,
-		Timestamp: now,
-	}
-
-	slog.Info("Captured message", "profile", profile, "entry", strings.TrimSpace(entry))
-
-	confirmMsg := fmt.Sprintf("✅ Captured to %s journal:\n%s", profile, strings.TrimSuffix(entry, "\n"))
-	return b.client.SendMessage(ctx, msgObj.Chat.ID, confirmMsg)
+	return b.client.SendMessage(ctx, msgObj.Chat.ID, resp.Reply)
 }
 
-func (b *Bot) sendHelp(ctx context.Context, chatID int64, lowerMsg string) error {
-	topic := strings.TrimSpace(strings.TrimPrefix(lowerMsg, "help"))
-	var helpText string
-	switch topic {
-	case "nesting":
-		helpText = "*Nesting Help*\n\n" +
-			"• `also [note]` - Nest under the last entry\n" +
-			"• `toggle also` - Enable auto-nesting mode (5m timeout)\n" +
-			"• Auto-nesting is disabled if a profile prefix (/w, /p) is used."
-	case "priority":
-		helpText = "*Priority Help*\n\n" +
-			"• `A [note]` - High priority ([#A])\n" +
-			"• `B [note]` - Medium priority ([#B])\n" +
-			"• `C [note]` - Low priority ([#C])\n" +
-			"• Can be combined with `todo`: `todo A fix bug`"
-	case "scheduling":
-		helpText = "*Scheduling Help*\n\n" +
-			"• `... scheduled for tomorrow` -> SCHEDULED: <YYYY-MM-DD Day>\n" +
-			"• `... deadline next friday` -> DEADLINE: <YYYY-MM-DD Day>"
-	case "media":
-		helpText = "*Media Help*\n\n" +
-			"• Photos and voice notes are downloaded to Logseq's `assets/` folder.\n" +
-			"• Captions are supported and appended to the link."
-	default:
-		helpText = "🤖 *Telegram Capture Help*\n\n" +
-			"*Profiles:*\n" +
-			"• `/w [note]` or `/work [note]` - Work journal\n" +
-			"• `/p [note]` or `/personal [note]` - Personal journal\n" +
-			"• `[note]` - Defaults to personal\n\n" +
-			"*Review:* `/today`, `/yesterday`\n" +
-			"*Topics:* `help nesting`, `help priority`, `help scheduling`, `help media`"
-	}
-
-	return b.client.SendMessage(ctx, chatID, helpText)
-}
-
-func (b *Bot) sendReview(ctx context.Context, chatID int64, lowerMsg string, now time.Time) error {
-	targetDate := now
-	if lowerMsg == "/yesterday" {
-		targetDate = now.AddDate(0, 0, -1)
-	}
-
-	responseText, err := b.journal.ReadReview(ctx, targetDate)
-	if err != nil {
-		return err
-	}
-	if responseText == "" {
-		label := "today"
-		if lowerMsg == "/yesterday" {
-			label = "yesterday"
-		}
-		responseText = fmt.Sprintf("📭 No entries found for %s.", label)
-	}
-
-	return b.client.SendMessage(ctx, chatID, responseText)
-}
-
-func (b *Bot) toggleAlso(ctx context.Context, chatID int64, now time.Time) error {
-	b.state.IsToggledAlso = !b.state.IsToggledAlso
-	b.state.LastInteractionTime = now
-	var confirm string
-	if b.state.IsToggledAlso {
-		confirm = "✅ Also mode enabled. Messages will be nested for 5 minutes of inactivity."
-	} else {
-		confirm = "❌ Also mode disabled."
-	}
-	return b.client.SendMessage(ctx, chatID, confirm)
-}
-
-func (b *Bot) handleMessage(ctx context.Context, update Update, now time.Time) (string, string, error) {
-	item := b.mapUpdateToCaptureItem(ctx, update, now)
-
-	// 1. Analyze message
-	block, profile, err := b.parser.Analyze(ctx, item, b.state)
-	if err != nil {
-		return "", "", err
-	}
-
-	if block.Text == "" {
-		return "", "", nil
-	}
-
-	// 2. Download media if present
-	if item.HasMedia {
-		if _, err := b.media.DownloadAsset(ctx, &item, profile); err != nil {
-			return "", "", err
-		}
-	}
-
-	// 3. Format entry
-	entry := b.formatter.Format(block, b.state)
-
-	// If we are editing, don't write to file here; handleEdit will do it.
-	if item.IsEdit {
-		return entry, profile, nil
-	}
-
-	// 4. Persist
-	filePath, err := b.journal.Append(profile, entry, item.Timestamp)
-	if err != nil {
-		return "", "", err
-	}
-
-	// 5. Update state for nesting
-	if block.IndentLevel == 0 {
-		b.state.LastProfile = profile
-		b.state.LastJournalFile = filePath
-	}
-	b.state.LastEntryTime = item.Timestamp
-	b.state.LastInteractionTime = now
-
-	return entry, profile, nil
-}
-
-func (b *Bot) handleEdit(ctx context.Context, update Update, now time.Time) error {
-	msgObj := update.EditedMessage
-	meta, ok := b.messageMap[msgObj.MessageID]
-	if !ok {
-		return fmt.Errorf("no metadata found for message %d", msgObj.MessageID)
-	}
-
-	if now.Sub(meta.Timestamp) > 1*time.Hour {
-		return fmt.Errorf("edit window expired for message %d", msgObj.MessageID)
-	}
-
-	newEntry, _, err := b.handleMessage(ctx, update, meta.Timestamp)
-	if err != nil {
-		return err
-	}
-
-	if err := b.journal.Update(meta.FilePath, meta.Content, newEntry); err != nil {
-		return err
-	}
-
-	if newEntry == "" {
-		delete(b.messageMap, msgObj.MessageID)
-	} else {
-		meta.Content = newEntry
-		b.messageMap[msgObj.MessageID] = meta
-	}
-
-	return b.client.SendMessage(ctx, msgObj.Chat.ID, "🔄 Updated entry in journal.")
-}
-
-func (b *Bot) mapUpdateToCaptureItem(ctx context.Context, update Update, now time.Time) CaptureItem {
+func (b *Bot) mapUpdateToRequest(update Update, now time.Time) (CaptureRequest, bool) {
 	msgObj := update.Message
 	isEdit := false
 	if msgObj == nil {
@@ -605,5 +408,34 @@ func (b *Bot) mapUpdateToCaptureItem(ctx context.Context, update Update, now tim
 		item.MediaID = msgObj.Voice.FileID
 	}
 
-	return item
+	clientID := fmt.Sprintf("telegram:%d", msgObj.Chat.ID)
+	text := strings.TrimSpace(msgObj.Text)
+
+	if !isEdit && text != "" {
+		lower := strings.ToLower(text)
+		switch {
+		case lower == "/today" || lower == "/yesterday":
+			return CaptureRequest{
+				ClientID:  clientID,
+				Kind:      RequestKindReview,
+				ReviewDay: strings.TrimPrefix(lower, "/"),
+				Timestamp: &now,
+			}, false
+		case lower == "help" || strings.HasPrefix(lower, "help ") || lower == "toggle also":
+			return CaptureRequest{
+				ClientID:  clientID,
+				Kind:      RequestKindCommand,
+				Text:      text,
+				Timestamp: &now,
+			}, true
+		}
+	}
+
+	return CaptureRequest{
+		ClientID:  clientID,
+		Kind:      RequestKindCapture,
+		Text:      text,
+		Timestamp: &now,
+		Item:      &item,
+	}, false
 }

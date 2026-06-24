@@ -1,6 +1,6 @@
 # Logseq Zettelkasten Boilerplate (Local-First)
 
-This repository provides a structured boilerplate for a local-first Zettelkasten system using Logseq. Note content is synced between other devices and mobile using Syncthing. It supports note capture via a smart Telegram bot.
+This repository provides a structured boilerplate for a local-first Zettelkasten system using Logseq. Note content is synced between other devices and mobile using Syncthing. It supports note capture via a transport-agnostic local service with Telegram enabled as the default adapter.
 
 ## Structure
 - `personal/`: Logseq graph for personal notes.
@@ -10,7 +10,7 @@ This repository provides a structured boilerplate for a local-first Zettelkasten
 
 ## Key Features
 - **Local-First Sync**: Uses Syncthing for private, peer-to-peer note synchronization across devices.
-- **Mobile Capture**: Integrated Telegram bot for capturing notes, TODOs, and media directly to your journals.
+- **Mobile Capture**: Integrated local capture daemon with a default Telegram adapter and a local CLI for journal capture.
 - **Smart Formatting**: Automatic TODO creation, priority handling, and natural language scheduling (e.g., "scheduled for tomorrow").
 - **Zettelkasten Workflow**: Pre-configured structure for Literature, Permanent, and Structure notes (MOCs).
 - **Privacy-First**: Note content is ignored by Git/Jujutsu; only system configurations and documentation are tracked.
@@ -47,6 +47,39 @@ Run the health check script to ensure no sensitive note content is being acciden
 ```bash
 ./scripts/health-check.sh
 ```
+
+## Logseq Capture
+
+The `logseq-capture` package now has three layers:
+- A shared capture service that owns parsing, formatting, session state, reviews, and journal writes.
+- A Telegram adapter, which remains the default runtime for `nix run .` and `logseq-capture`.
+- A localhost HTTP daemon and CLI for local text capture workflows.
+
+Default daemon address: `127.0.0.1:43123`
+
+### Default Telegram Runtime
+
+These paths still require `LOGSEQ_CAPTURE_TELEGRAM_API_KEY`:
+```bash
+nix run .
+logseq-capture
+```
+
+### Local Daemon And CLI
+
+These paths do not require the Telegram token:
+```bash
+logseq-capture serve
+logseq-capture status
+logseq-capture send "todo A fix bug"
+logseq-capture command "help"
+logseq-capture command "toggle also"
+logseq-capture review today
+logseq-capture review yesterday
+logseq-capture cli
+```
+
+Set `LOGSEQ_CAPTURE_ADDR` to override the default daemon bind address.
 
 ## Home Manager Shell Summary
 

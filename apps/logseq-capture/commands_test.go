@@ -7,31 +7,8 @@ import (
 	"time"
 )
 
-type mockClientForCommands struct {
-	sent []string
-}
-
-func (m *mockClientForCommands) GetUpdates(ctx context.Context, offset int, timeout int) ([]Update, error) {
-	return nil, nil
-}
-func (m *mockClientForCommands) SendMessage(ctx context.Context, chatID int64, text string) error {
-	m.sent = append(m.sent, text)
-	return nil
-}
-func (m *mockClientForCommands) GetFile(ctx context.Context, fileID string) (string, error) {
-	return "", nil
-}
-func (m *mockClientForCommands) DownloadFile(ctx context.Context, filePath string, destPath string) error {
-	return nil
-}
-
 func TestCommandDispatcher(t *testing.T) {
-	mock := &mockClientForCommands{}
-	bot := &Bot{
-		client:   mock,
-		commands: NewCommandDispatcher(),
-		journal:  NewJournalStore("."),
-	}
+	svc := NewCaptureService(".")
 	ctx := context.Background()
 	now := time.Now()
 
@@ -48,8 +25,8 @@ func TestCommandDispatcher(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
-			handled, err := bot.commands.Dispatch(ctx, bot, 123, tc.input, now)
-			if err != nil {
+			_, _, handled, err := svc.commands.Dispatch(ctx, svc, "client-1", tc.input, SessionState{}, now)
+			if err != nil && tc.expected {
 				t.Fatalf("Dispatch failed: %v", err)
 			}
 			if handled != tc.expected {
@@ -59,19 +36,16 @@ func TestCommandDispatcher(t *testing.T) {
 	}
 }
 
-func TestCommandDispatcher_Review(t *testing.T) {
-	mock := &mockClientForCommands{}
-	bot := NewBot(mock, ".offset")
+func TestCommandDispatcherReview(t *testing.T) {
+	svc := NewCaptureService(".")
 	ctx := context.Background()
 	now := time.Now()
 
-	// Test review handler sends a message
-	handled, err := bot.commands.Dispatch(ctx, bot, 123, "/today", now)
+	resp, _, handled, err := svc.commands.Dispatch(ctx, svc, "client-1", "/today", SessionState{}, now)
 	if err != nil || !handled {
-		t.Fatalf("Failed to handle /today")
+		t.Fatalf("failed to handle /today: handled=%v err=%v", handled, err)
 	}
-
-	if len(mock.sent) != 1 || !strings.Contains(mock.sent[0], "today") {
-		t.Errorf("Expected review message, got %v", mock.sent)
+	if !strings.Contains(resp.Reply, "today") {
+		t.Errorf("expected review message, got %q", resp.Reply)
 	}
 }

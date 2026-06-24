@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -751,7 +756,11 @@ func TestToggleAlso(t *testing.T) {
 	bot.processMessage(ctx, Update{Message: &Message{Text: "Auto Nested", Chat: Chat{ID: 1}}}, fixedNow.Add(time.Minute))
 
 	// 4. Force timeout
-	bot.state.LastInteractionTime = bot.state.LastInteractionTime.Add(-6 * time.Minute)
+	bot.service.mu.Lock()
+	state := bot.service.states["telegram:1"]
+	state.LastInteractionTime = state.LastInteractionTime.Add(-6 * time.Minute)
+	bot.service.states["telegram:1"] = state
+	bot.service.mu.Unlock()
 
 	// 5. Send message (should be top-level, with #inbox)
 	bot.processMessage(ctx, Update{Message: &Message{Text: "Top Level Again", Chat: Chat{ID: 1}}}, fixedNow.Add(10*time.Minute))
@@ -787,4 +796,326 @@ func TestToggleAlso(t *testing.T) {
 	if !strings.Contains(lines[3], "Disabled Manually #inbox") || !strings.HasPrefix(lines[3], "- ") {
 		t.Errorf("line 3 incorrect (should be top-level after manual disable): %q", lines[3])
 	}
+}
+
+func TestSharedServiceCaptureMatchesTelegram(t *testing.T) {
+	tmpDirCLI, err := os.MkdirTemp("", "logseq-cli-capture-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDirCLI)
+
+	tmpDirTelegram, err := os.MkdirTemp("", "logseq-telegram-capture-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDirTelegram)
+
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	service := NewCaptureService(tmpDirCLI)
+	resp, err := service.Process(ctx, CaptureRequest{
+		ClientID:  "cli",
+		Kind:      RequestKindCapture,
+		Text:      "todo A fix bug",
+		Timestamp: &fixedNow,
+	}, nil)
+	if err != nil {
+		t.Fatalf("service capture failed: %v", err)
+	}
+
+	mock := &mockTelegramClient{}
+	bot := NewBot(mock, filepath.Join(tmpDirTelegram, ".offset"))
+	bot.rootDir = tmpDirTelegram
+	if err := bot.processMessage(ctx, Update{
+		Message: &Message{
+			MessageID: 1,
+			Text:      "todo A fix bug",
+			Chat:      Chat{ID: 123},
+		},
+	}, fixedNow); err != nil {
+		t.Fatalf("telegram capture failed: %v", err)
+	}
+
+	cliJournal, err := os.ReadFile(filepath.Join(tmpDirCLI, "personal", "journals", "2026_05_19.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	telegramJournal, err := os.ReadFile(filepath.Join(tmpDirTelegram, "personal", "journals", "2026_05_19.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(cliJournal) != string(telegramJournal) {
+		t.Fatalf("journal mismatch\ncli=%q\ntelegram=%q", string(cliJournal), string(telegramJournal))
+	}
+	if resp.Entry != string(cliJournal) {
+		t.Fatalf("expected service entry %q to match journal %q", resp.Entry, string(cliJournal))
+	}
+}
+
+func TestSharedServiceCommandsAndReviews(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "logseq-service-commands-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	service := NewCaptureService(tmpDir)
+	ctx := context.Background()
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+
+	resp, err := service.Process(ctx, CaptureRequest{
+		ClientID:  "cli",
+		Kind:      RequestKindCommand,
+		Text:      "help",
+		Timestamp: &fixedNow,
+	}, nil)
+	if err != nil {
+		t.Fatalf("help failed: %v", err)
+	}
+	if !strings.Contains(resp.Reply, "Telegram Capture Help") {
+		t.Fatalf("unexpected help reply: %q", resp.Reply)
+	}
+
+	resp, err = service.Process(ctx, CaptureRequest{
+		ClientID:  "cli",
+		Kind:      RequestKindCommand,
+		Text:      "toggle also",
+		Timestamp: &fixedNow,
+	}, nil)
+	if err != nil {
+		t.Fatalf("toggle failed: %v", err)
+	}
+	if !strings.Contains(resp.Reply, "Also mode enabled") {
+		t.Fatalf("unexpected toggle reply: %q", resp.Reply)
+	}
+
+	if _, err := service.Process(ctx, CaptureRequest{
+		ClientID:  "cli",
+		Kind:      RequestKindCapture,
+		Text:      "Parent note",
+		Timestamp: ptrTime(fixedNow.Add(30 * time.Second)),
+	}, nil); err != nil {
+		t.Fatalf("parent capture failed: %v", err)
+	}
+
+	if _, err := service.Process(ctx, CaptureRequest{
+		ClientID:  "cli",
+		Kind:      RequestKindCapture,
+		Text:      "nested note",
+		Timestamp: ptrTime(fixedNow.Add(time.Minute)),
+	}, nil); err != nil {
+		t.Fatalf("capture failed: %v", err)
+	}
+
+	journalPath := filepath.Join(tmpDir, "personal", "journals", "2026_05_19.md")
+	content, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "  - nested note") {
+		t.Fatalf("expected nested note in %q", string(content))
+	}
+
+	resp, err = service.Process(ctx, CaptureRequest{
+		ClientID:  "cli",
+		Kind:      RequestKindReview,
+		ReviewDay: "today",
+		Timestamp: &fixedNow,
+	}, nil)
+	if err != nil {
+		t.Fatalf("today review failed: %v", err)
+	}
+	if !strings.Contains(resp.Reply, "nested note") {
+		t.Fatalf("unexpected today review: %q", resp.Reply)
+	}
+
+	resp, err = service.Process(ctx, CaptureRequest{
+		ClientID:  "cli",
+		Kind:      RequestKindReview,
+		ReviewDay: "yesterday",
+		Timestamp: &fixedNow,
+	}, nil)
+	if err != nil {
+		t.Fatalf("yesterday review failed: %v", err)
+	}
+	if !strings.Contains(resp.Reply, "No entries found for yesterday") {
+		t.Fatalf("unexpected yesterday review: %q", resp.Reply)
+	}
+}
+
+func TestToggleAlsoStateIsScopedByClientID(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "logseq-client-scope-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	service := NewCaptureService(tmpDir)
+	ctx := context.Background()
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+
+	mustProcess := func(req CaptureRequest) CaptureResponse {
+		t.Helper()
+		resp, err := service.Process(ctx, req, nil)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		return resp
+	}
+
+	mustProcess(CaptureRequest{ClientID: "a", Kind: RequestKindCapture, Text: "Parent A", Timestamp: &fixedNow})
+	mustProcess(CaptureRequest{ClientID: "b", Kind: RequestKindCapture, Text: "Parent B", Timestamp: &fixedNow})
+	mustProcess(CaptureRequest{ClientID: "a", Kind: RequestKindCommand, Text: "toggle also", Timestamp: &fixedNow})
+
+	respA := mustProcess(CaptureRequest{ClientID: "a", Kind: RequestKindCapture, Text: "Child A", Timestamp: ptrTime(fixedNow.Add(time.Minute))})
+	respB := mustProcess(CaptureRequest{ClientID: "b", Kind: RequestKindCapture, Text: "Child B", Timestamp: ptrTime(fixedNow.Add(time.Minute))})
+
+	if !strings.HasPrefix(respA.Entry, "  - ") {
+		t.Fatalf("expected nested entry for client a, got %q", respA.Entry)
+	}
+	if !strings.HasPrefix(respB.Entry, "- ") || strings.Contains(respB.Entry, "  - ") {
+		t.Fatalf("expected top-level entry for client b, got %q", respB.Entry)
+	}
+}
+
+func TestHTTPHandlers(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "logseq-http-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	server := newAPIServer(NewCaptureService(tmpDir))
+
+	healthReq := httptest.NewRequest(http.MethodGet, "/health", nil)
+	healthRec := httptest.NewRecorder()
+	server.handler().ServeHTTP(healthRec, healthReq)
+	if healthRec.Code != http.StatusOK {
+		t.Fatalf("health status = %d", healthRec.Code)
+	}
+
+	captureBody, _ := json.Marshal(textRequest{ClientID: "cli", Text: "hello"})
+	captureReq := httptest.NewRequest(http.MethodPost, "/capture", bytes.NewReader(captureBody))
+	captureRec := httptest.NewRecorder()
+	server.handler().ServeHTTP(captureRec, captureReq)
+	if captureRec.Code != http.StatusOK {
+		t.Fatalf("capture status = %d body=%s", captureRec.Code, captureRec.Body.String())
+	}
+	var captureResp CaptureResponse
+	if err := json.Unmarshal(captureRec.Body.Bytes(), &captureResp); err != nil {
+		t.Fatal(err)
+	}
+	if !captureResp.OK || !strings.Contains(captureResp.Reply, "Captured to personal journal") {
+		t.Fatalf("unexpected capture response: %+v", captureResp)
+	}
+
+	reviewReq := httptest.NewRequest(http.MethodGet, "/review?day=today&client_id=cli", nil)
+	reviewRec := httptest.NewRecorder()
+	server.handler().ServeHTTP(reviewRec, reviewReq)
+	if reviewRec.Code != http.StatusOK {
+		t.Fatalf("review status = %d body=%s", reviewRec.Code, reviewRec.Body.String())
+	}
+
+	badReviewReq := httptest.NewRequest(http.MethodGet, "/review?day=last-week&client_id=cli", nil)
+	badReviewRec := httptest.NewRecorder()
+	server.handler().ServeHTTP(badReviewRec, badReviewReq)
+	if badReviewRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad review request to fail, got %d", badReviewRec.Code)
+	}
+}
+
+func TestRunDefaultModeUsesTelegramPath(t *testing.T) {
+	t.Setenv("LOGSEQ_CAPTURE_TELEGRAM_API_KEY", "test-token")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var telegramClientCalled bool
+	var botRunCalled bool
+
+	deps := runtimeDeps{
+		newTelegramClient: func(token string) TelegramClient {
+			telegramClientCalled = token == "test-token"
+			return &mockTelegramClient{}
+		},
+		newBot: func(client TelegramClient, offsetFile string) *Bot {
+			botRunCalled = true
+			return NewBot(client, offsetFile)
+		},
+		newService: func(rootDir string) *CaptureService {
+			return NewCaptureService(rootDir)
+		},
+		serveHTTP: func(ctx context.Context, service *CaptureService, addr string) error {
+			t.Fatal("serveHTTP should not be called in default mode")
+			return nil
+		},
+		newDaemonClient: newDaemonClient,
+		stdin:           os.Stdin,
+		stdout:          os.Stdout,
+	}
+
+	err := run(ctx, nil, deps)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if !telegramClientCalled {
+		t.Fatal("expected Telegram client path to be used")
+	}
+	if !botRunCalled {
+		t.Fatal("expected bot startup path to be used")
+	}
+}
+
+func TestRunServeModeSkipsTelegramEnvRequirement(t *testing.T) {
+	t.Setenv("LOGSEQ_CAPTURE_TELEGRAM_API_KEY", "")
+
+	ctx := context.Background()
+	var serveCalled bool
+
+	deps := runtimeDeps{
+		newTelegramClient: func(token string) TelegramClient {
+			t.Fatal("telegram client should not be created for serve mode")
+			return nil
+		},
+		newBot: func(client TelegramClient, offsetFile string) *Bot {
+			t.Fatal("bot should not be created for serve mode")
+			return nil
+		},
+		newService: func(rootDir string) *CaptureService {
+			return NewCaptureService(rootDir)
+		},
+		serveHTTP: func(ctx context.Context, service *CaptureService, addr string) error {
+			serveCalled = true
+			if addr != defaultDaemonAddr {
+				t.Fatalf("unexpected addr %q", addr)
+			}
+			return nil
+		},
+		newDaemonClient: newDaemonClient,
+		stdin:           os.Stdin,
+		stdout:          os.Stdout,
+	}
+
+	if err := run(ctx, []string{"serve"}, deps); err != nil {
+		t.Fatalf("serve mode failed: %v", err)
+	}
+	if !serveCalled {
+		t.Fatal("expected serveHTTP to be called")
+	}
+}
+
+func TestRunDefaultModeFailsWithoutTelegramEnv(t *testing.T) {
+	t.Setenv("LOGSEQ_CAPTURE_TELEGRAM_API_KEY", "")
+
+	err := run(context.Background(), nil, runtimeDeps{})
+	if err == nil || !strings.Contains(err.Error(), "LOGSEQ_CAPTURE_TELEGRAM_API_KEY is not set") {
+		t.Fatalf("expected missing env error, got %v", err)
+	}
+}
+
+func ptrTime(t time.Time) *time.Time {
+	return &t
 }

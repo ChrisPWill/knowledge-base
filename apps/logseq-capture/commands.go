@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-type CommandHandler func(ctx context.Context, b *Bot, chatID int64, text string, now time.Time) error
+type CommandHandler func(ctx context.Context, svc *CaptureService, clientID string, text string, state SessionState, now time.Time) (CaptureResponse, SessionState, error)
 
 type CommandDispatcher struct {
 	handlers map[string]CommandHandler
@@ -27,32 +27,40 @@ func (d *CommandDispatcher) registerDefaultHandlers() {
 	d.handlers["toggle also"] = handleToggleCommand
 }
 
-func (d *CommandDispatcher) Dispatch(ctx context.Context, b *Bot, chatID int64, text string, now time.Time) (bool, error) {
+func (d *CommandDispatcher) Dispatch(ctx context.Context, svc *CaptureService, clientID string, text string, state SessionState, now time.Time) (CaptureResponse, SessionState, bool, error) {
 	lowerMsg := strings.ToLower(strings.TrimSpace(text))
-	
+
 	// Exact matches
 	if handler, ok := d.handlers[lowerMsg]; ok {
-		return true, handler(ctx, b, chatID, lowerMsg, now)
+		resp, nextState, err := handler(ctx, svc, clientID, lowerMsg, state, now)
+		return resp, nextState, true, err
 	}
 
 	// Prefix matches (e.g. help priority)
 	for cmd, handler := range d.handlers {
 		if strings.HasPrefix(lowerMsg, cmd+" ") {
-			return true, handler(ctx, b, chatID, lowerMsg, now)
+			resp, nextState, err := handler(ctx, svc, clientID, lowerMsg, state, now)
+			return resp, nextState, true, err
 		}
 	}
 
-	return false, nil
+	return CaptureResponse{}, state, false, nil
 }
 
-func handleHelpCommand(ctx context.Context, b *Bot, chatID int64, text string, now time.Time) error {
-	return b.sendHelp(ctx, chatID, text)
+func handleHelpCommand(ctx context.Context, svc *CaptureService, clientID string, text string, state SessionState, now time.Time) (CaptureResponse, SessionState, error) {
+	return svc.helpResponse(text), state, nil
 }
 
-func handleReviewCommand(ctx context.Context, b *Bot, chatID int64, text string, now time.Time) error {
-	return b.sendReview(ctx, chatID, text, now)
+func handleReviewCommand(ctx context.Context, svc *CaptureService, clientID string, text string, state SessionState, now time.Time) (CaptureResponse, SessionState, error) {
+	day := "today"
+	if text == "/yesterday" {
+		day = "yesterday"
+	}
+	resp, err := svc.handleReview(day, now)
+	return resp, state, err
 }
 
-func handleToggleCommand(ctx context.Context, b *Bot, chatID int64, text string, now time.Time) error {
-	return b.toggleAlso(ctx, chatID, now)
+func handleToggleCommand(ctx context.Context, svc *CaptureService, clientID string, text string, state SessionState, now time.Time) (CaptureResponse, SessionState, error) {
+	resp, nextState := svc.toggleAlsoResponse(state, now)
+	return resp, nextState, nil
 }

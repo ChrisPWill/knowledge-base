@@ -52,7 +52,7 @@ func TestLogseqFormatter(t *testing.T) {
 			if tc.name == "Nested recent" {
 				s.LastEntryTime = now.Add(-10 * time.Minute)
 			}
-			
+
 			result := f.Format(tc.block, s)
 			if result != tc.expected {
 				t.Errorf("Expected %q, got %q", tc.expected, result)
