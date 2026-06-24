@@ -52,18 +52,21 @@ Run the health check script to ensure no sensitive note content is being acciden
 
 The `logseq-capture` package now has three layers:
 - A shared capture service that owns parsing, formatting, session state, reviews, and journal writes.
-- A Telegram adapter, which remains the default runtime for `nix run .` and `logseq-capture`.
+- A Telegram adapter, which now starts alongside the local HTTP daemon for `nix run .` and `logseq-capture`.
 - A localhost HTTP daemon and CLI for local text capture workflows.
 
 Default daemon address: `127.0.0.1:43123`
 
-### Default Telegram Runtime
+### Default Combined Runtime
 
 These paths still require `LOGSEQ_CAPTURE_TELEGRAM_API_KEY`:
 ```bash
 nix run .
 logseq-capture
+logseq-capture telegram
 ```
+
+`nix run .` and `logseq-capture` now start both Telegram polling and the localhost HTTP API in one process. Use `logseq-capture telegram` if you want Telegram-only behavior.
 
 ### Local Daemon And CLI
 

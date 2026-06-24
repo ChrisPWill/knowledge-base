@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -52,10 +53,12 @@ func main() {
 
 func run(ctx context.Context, args []string, deps runtimeDeps) error {
 	if len(args) == 0 {
-		return runTelegram(ctx, deps)
+		return runCombined(ctx, deps)
 	}
 
 	switch args[0] {
+	case "telegram":
+		return runTelegram(ctx, deps)
 	case "serve":
 		service := deps.newService(".")
 		addr := daemonAddr()
@@ -103,6 +106,48 @@ func run(ctx context.Context, args []string, deps runtimeDeps) error {
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
+}
+
+func runCombined(ctx context.Context, deps runtimeDeps) error {
+	token := os.Getenv("LOGSEQ_CAPTURE_TELEGRAM_API_KEY")
+	if token == "" {
+		return fmt.Errorf("LOGSEQ_CAPTURE_TELEGRAM_API_KEY is not set")
+	}
+
+	service := deps.newService(".")
+	client := deps.newTelegramClient(token)
+	bot := deps.newBot(client, ".offset")
+	bot.service = service
+	bot.rootDir = "."
+	bot.titleFetcher = defaultTitleFetcher
+
+	slog.Info("Starting combined capture runtime", "telegram", true, "http", daemonAddr())
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		errCh <- deps.serveHTTP(runCtx, service, daemonAddr())
+	}()
+
+	go func() {
+		defer wg.Done()
+		errCh <- bot.Run(runCtx)
+	}()
+
+	err := <-errCh
+	cancel()
+	wg.Wait()
+
+	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 func runTelegram(ctx context.Context, deps runtimeDeps) error {

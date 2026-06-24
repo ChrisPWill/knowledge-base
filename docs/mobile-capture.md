@@ -1,6 +1,6 @@
 # Mobile Capture
 
-This project includes a transport-agnostic Logseq capture service. Telegram remains the default runtime for mobile use, and a local daemon plus CLI are available for desktop capture and automation.
+This project includes a transport-agnostic Logseq capture service. The default runtime starts both Telegram polling and the local HTTP daemon in one process, and the CLI is available for desktop capture and automation.
 
 ## Setup Instructions
 
@@ -25,7 +25,7 @@ Then export `LOGSEQ_CAPTURE_TELEGRAM_API_KEY` in your shell or a separate local 
 export LOGSEQ_CAPTURE_TELEGRAM_API_KEY="your_token_here"
 ```
 
-### 3. Running The Default Telegram Runtime
+### 3. Running The Default Combined Runtime
 
 #### Using Nix
 ```bash
@@ -35,6 +35,15 @@ nix run .
 #### Manual Run
 ```bash
 cd apps/logseq-capture && go run .
+```
+
+These commands now start:
+- Telegram polling
+- The localhost HTTP API on `127.0.0.1:43123`
+
+If you want Telegram-only behavior, use:
+```bash
+cd apps/logseq-capture && go run . telegram
 ```
 
 ## Local Daemon And CLI
@@ -73,7 +82,7 @@ Start an interactive REPL:
 cd apps/logseq-capture && go run . cli
 ```
 
-The first CLI version is text-only. Telegram-specific photo and voice capture still works through the default Telegram adapter path only.
+The first CLI version is text-only. Telegram-specific photo and voice capture still works through the combined runtime and the Telegram-only adapter path.
 
 ## Usage
 

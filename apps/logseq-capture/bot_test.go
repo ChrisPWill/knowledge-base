@@ -1027,7 +1027,7 @@ func TestHTTPHandlers(t *testing.T) {
 	}
 }
 
-func TestRunDefaultModeUsesTelegramPath(t *testing.T) {
+func TestRunDefaultModeStartsTelegramAndHTTP(t *testing.T) {
 	t.Setenv("LOGSEQ_CAPTURE_TELEGRAM_API_KEY", "test-token")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1035,6 +1035,7 @@ func TestRunDefaultModeUsesTelegramPath(t *testing.T) {
 
 	var telegramClientCalled bool
 	var botRunCalled bool
+	var serveCalled bool
 
 	deps := runtimeDeps{
 		newTelegramClient: func(token string) TelegramClient {
@@ -1049,8 +1050,9 @@ func TestRunDefaultModeUsesTelegramPath(t *testing.T) {
 			return NewCaptureService(rootDir)
 		},
 		serveHTTP: func(ctx context.Context, service *CaptureService, addr string) error {
-			t.Fatal("serveHTTP should not be called in default mode")
-			return nil
+			serveCalled = true
+			<-ctx.Done()
+			return ctx.Err()
 		},
 		newDaemonClient: newDaemonClient,
 		stdin:           os.Stdin,
@@ -1066,6 +1068,9 @@ func TestRunDefaultModeUsesTelegramPath(t *testing.T) {
 	}
 	if !botRunCalled {
 		t.Fatal("expected bot startup path to be used")
+	}
+	if !serveCalled {
+		t.Fatal("expected HTTP server to be started in default mode")
 	}
 }
 
@@ -1104,6 +1109,49 @@ func TestRunServeModeSkipsTelegramEnvRequirement(t *testing.T) {
 	}
 	if !serveCalled {
 		t.Fatal("expected serveHTTP to be called")
+	}
+}
+
+func TestRunTelegramModeUsesTelegramOnly(t *testing.T) {
+	t.Setenv("LOGSEQ_CAPTURE_TELEGRAM_API_KEY", "test-token")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var telegramClientCalled bool
+	var botRunCalled bool
+
+	deps := runtimeDeps{
+		newTelegramClient: func(token string) TelegramClient {
+			telegramClientCalled = token == "test-token"
+			return &mockTelegramClient{}
+		},
+		newBot: func(client TelegramClient, offsetFile string) *Bot {
+			botRunCalled = true
+			return NewBot(client, offsetFile)
+		},
+		newService: func(rootDir string) *CaptureService {
+			t.Fatal("service should not be created for telegram-only mode")
+			return nil
+		},
+		serveHTTP: func(ctx context.Context, service *CaptureService, addr string) error {
+			t.Fatal("serveHTTP should not be called in telegram-only mode")
+			return nil
+		},
+		newDaemonClient: newDaemonClient,
+		stdin:           os.Stdin,
+		stdout:          os.Stdout,
+	}
+
+	err := run(ctx, []string{"telegram"}, deps)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if !telegramClientCalled {
+		t.Fatal("expected Telegram client path to be used")
+	}
+	if !botRunCalled {
+		t.Fatal("expected bot startup path to be used")
 	}
 }
 
