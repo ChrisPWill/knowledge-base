@@ -16,16 +16,18 @@ var (
 )
 
 type MessageParser struct {
-	rootDir      string
-	titleFetcher func(ctx context.Context, url string) (string, error)
-	rules        *RuleEngine
+	rootDir        string
+	defaultProfile string
+	titleFetcher   func(ctx context.Context, url string) (string, error)
+	rules          *RuleEngine
 }
 
-func NewMessageParser(rootDir string, titleFetcher func(ctx context.Context, url string) (string, error)) *MessageParser {
+func NewMessageParser(rootDir, defaultProfile string, titleFetcher func(ctx context.Context, url string) (string, error)) *MessageParser {
 	return &MessageParser{
-		rootDir:      rootDir,
-		titleFetcher: titleFetcher,
-		rules:        NewRuleEngine(rootDir),
+		rootDir:        rootDir,
+		defaultProfile: normalizeDefaultProfile(defaultProfile),
+		titleFetcher:   titleFetcher,
+		rules:          NewRuleEngine(rootDir),
 	}
 }
 
@@ -131,7 +133,7 @@ func (p *MessageParser) determineProfile(msg string, isAlso bool, state SessionS
 		return state.LastProfile, cleanMsg
 	}
 
-	profile := "personal"
+	profile := p.defaultProfile
 	cleanMsg := msg
 
 	if strings.HasPrefix(msg, "/w ") || strings.HasPrefix(msg, "/work ") {

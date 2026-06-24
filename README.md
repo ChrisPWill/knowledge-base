@@ -104,6 +104,8 @@ Example Home Manager configuration:
 }
 ```
 
+For `logseq-capture`, unprefixed captures default to `personal`. Set `LOGSEQ_CAPTURE_DEFAULT_JOURNAL=work` to flip the default target while keeping `/work` and `/personal` overrides available.
+
 The expensive search runs in a background scheduler and the shell hook only prints the cached summary, so interactive shell startup stays fast.
 The shell hook also records when it last displayed the summary and will only print it once per `intervalSeconds`, even if you start multiple shells during that window.
 

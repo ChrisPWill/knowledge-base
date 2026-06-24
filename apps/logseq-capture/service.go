@@ -21,12 +21,13 @@ func (noopAssetDownloader) DownloadAsset(ctx context.Context, item *CaptureItem,
 }
 
 type CaptureService struct {
-	rootDir      string
-	parser       *MessageParser
-	journal      *JournalStore
-	formatter    *LogseqFormatter
-	commands     *CommandDispatcher
-	titleFetcher func(ctx context.Context, url string) (string, error)
+	rootDir        string
+	defaultProfile string
+	parser         *MessageParser
+	journal        *JournalStore
+	formatter      *LogseqFormatter
+	commands       *CommandDispatcher
+	titleFetcher   func(ctx context.Context, url string) (string, error)
 
 	mu          sync.Mutex
 	states      map[string]SessionState
@@ -35,14 +36,16 @@ type CaptureService struct {
 
 func NewCaptureService(rootDir string) *CaptureService {
 	fetcher := defaultTitleFetcher
+	defaultProfile := defaultCaptureProfileFromEnv()
 	svc := &CaptureService{
-		rootDir:      rootDir,
-		parser:       NewMessageParser(rootDir, fetcher),
-		journal:      NewJournalStore(rootDir),
-		formatter:    &LogseqFormatter{},
-		titleFetcher: fetcher,
-		states:       make(map[string]SessionState),
-		messageMaps:  make(map[string]map[int64]MessageMetadata),
+		rootDir:        rootDir,
+		defaultProfile: defaultProfile,
+		parser:         NewMessageParser(rootDir, defaultProfile, fetcher),
+		journal:        NewJournalStore(rootDir),
+		formatter:      &LogseqFormatter{},
+		titleFetcher:   fetcher,
+		states:         make(map[string]SessionState),
+		messageMaps:    make(map[string]map[int64]MessageMetadata),
 	}
 	svc.commands = NewCommandDispatcher()
 	return svc
@@ -301,7 +304,7 @@ func (s *CaptureService) helpResponse(lowerMsg string) CaptureResponse {
 			"*Profiles:*\n" +
 			"• `/w [note]` or `/work [note]` - Work journal\n" +
 			"• `/p [note]` or `/personal [note]` - Personal journal\n" +
-			"• `[note]` - Defaults to personal\n\n" +
+			fmt.Sprintf("• `[note]` - Defaults to %s (override with `LOGSEQ_CAPTURE_DEFAULT_JOURNAL`)\n\n", s.defaultProfile) +
 			"*Review:* `/today`, `/yesterday`\n" +
 			"*Topics:* `help nesting`, `help priority`, `help scheduling`, `help media`"
 	}
@@ -342,5 +345,20 @@ func saveMessageMap(path string, messageMap map[int64]MessageMetadata) {
 	}
 	if data, err := json.Marshal(messageMap); err == nil {
 		_ = os.WriteFile(path, data, 0644)
+	}
+}
+
+func defaultCaptureProfileFromEnv() string {
+	return normalizeDefaultProfile(os.Getenv("LOGSEQ_CAPTURE_DEFAULT_JOURNAL"))
+}
+
+func normalizeDefaultProfile(profile string) string {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "work":
+		return "work"
+	case "personal":
+		return "personal"
+	default:
+		return "personal"
 	}
 }

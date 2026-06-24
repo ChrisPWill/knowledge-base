@@ -11,6 +11,7 @@ This project includes a transport-agnostic Logseq capture service. The default r
 
 ### 2. Configure Secrets
 The default Telegram runtime requires the `LOGSEQ_CAPTURE_TELEGRAM_API_KEY` environment variable.
+Unprefixed captures default to `personal` unless you set `LOGSEQ_CAPTURE_DEFAULT_JOURNAL=work`.
 
 #### A. Nix/Direnv (Recommended)
 If you use `direnv`, create a `.envrc` file with:
@@ -23,6 +24,7 @@ Then export `LOGSEQ_CAPTURE_TELEGRAM_API_KEY` in your shell or a separate local 
 #### B. Manual Export
 ```bash
 export LOGSEQ_CAPTURE_TELEGRAM_API_KEY="your_token_here"
+export LOGSEQ_CAPTURE_DEFAULT_JOURNAL="work"
 ```
 
 ### 3. Running The Default Combined Runtime
@@ -91,7 +93,7 @@ Send a message to your bot, or send text to the local daemon with the CLI. Both 
 ### Profile Selection
 - `/w [note]` or `/work [note]` - Captures to `work/journals/YYYY_MM_DD.md`.
 - `/p [note]` or `/personal [note]` - Captures to `personal/journals/YYYY_MM_DD.md`.
-- `[note]` (no prefix) - Defaults to **personal**.
+- `[note]` (no prefix) - Defaults to `LOGSEQ_CAPTURE_DEFAULT_JOURNAL`, or **personal** if unset/invalid.
 
 ### Smart Features
 - **TODOs**: Start a message with `todo ` (case-insensitive) to create a Logseq TODO.

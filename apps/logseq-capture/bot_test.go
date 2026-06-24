@@ -451,6 +451,55 @@ func TestProcessMessage(t *testing.T) {
 	}
 }
 
+func TestProcessMessageDefaultProfileFromEnv(t *testing.T) {
+	t.Setenv("LOGSEQ_CAPTURE_DEFAULT_JOURNAL", "work")
+
+	tmpDir, err := os.MkdirTemp("", "logseq-default-profile-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mock := &mockTelegramClient{}
+	bot := NewBot(mock, filepath.Join(tmpDir, ".offset"))
+	bot.rootDir = tmpDir
+
+	fixedNow := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	update := Update{Message: &Message{}}
+	update.Message.Text = "Unprefixed note"
+	update.Message.Chat.ID = 123
+
+	if err := bot.processMessage(ctx, update, fixedNow); err != nil {
+		t.Fatalf("processMessage failed: %v", err)
+	}
+
+	workPath := filepath.Join(tmpDir, "work", "journals", "2026_05_19.md")
+	content, err := os.ReadFile(workPath)
+	if err != nil {
+		t.Fatalf("could not read work journal: %v", err)
+	}
+	if !strings.Contains(string(content), "Unprefixed note #inbox") {
+		t.Fatalf("unexpected journal content: %q", string(content))
+	}
+
+	personalPath := filepath.Join(tmpDir, "personal", "journals", "2026_05_19.md")
+	if _, err := os.Stat(personalPath); !os.IsNotExist(err) {
+		t.Fatalf("expected no personal journal write, got err=%v", err)
+	}
+}
+
+func TestHelpShowsConfiguredDefaultProfile(t *testing.T) {
+	t.Setenv("LOGSEQ_CAPTURE_DEFAULT_JOURNAL", "work")
+
+	svc := NewCaptureService(".")
+	resp := svc.helpResponse("help")
+	if !strings.Contains(resp.Reply, "Defaults to work") {
+		t.Fatalf("expected help to mention work default, got %q", resp.Reply)
+	}
+}
+
 func TestProcessMessageError(t *testing.T) {
 	caseTmpDir, err := os.MkdirTemp("", "logseq-err-")
 	if err != nil {
